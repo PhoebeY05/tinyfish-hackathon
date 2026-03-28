@@ -91,7 +91,7 @@ async function fetchWikipediaImage(species) {
         const data = await response.json();
         return {
             ...species,
-            imageUrl: data.thumbnail?.source || null,
+            imageUrl: data.originalimage?.source || data.thumbnail?.source || null,
             sourceUrl: data.content_urls?.desktop?.page || `https://en.wikipedia.org/wiki/${species.wikipediaTitle}`,
             sourceName: 'Wikipedia',
         };
@@ -376,12 +376,14 @@ export default function QuizPage() {
 
             <div className="card-border bg-card overflow-hidden">
                 {currentQuestion?.imageUrl ? (
-                    <img
-                        src={currentQuestion.imageUrl}
-                        alt="Bird quiz question"
-                        className="w-full object-cover"
-                        style={{ maxHeight: '430px' }}
-                    />
+                    <div className="w-full flex items-center justify-center" style={{ minHeight: '340px', maxHeight: '430px', backgroundColor: '#efeadf' }}>
+                        <img
+                            src={currentQuestion.imageUrl}
+                            alt="Bird quiz question"
+                            className="w-full h-full object-contain"
+                            style={{ maxHeight: '430px' }}
+                        />
+                    </div>
                 ) : (
                     <div className="w-full h-72 flex items-center justify-center" style={{ backgroundColor: '#efeadf' }}>
                         <span className="font-mono text-sm text-muted">No photo found for this bird. Guess anyway.</span>
