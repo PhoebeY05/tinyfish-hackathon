@@ -37,6 +37,7 @@ settings.upload_dir.mkdir(parents=True, exist_ok=True)
 settings.report_dir.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(title="TinyFish Bird Report MVP")
+app.mount("/uploads", StaticFiles(directory=str(settings.upload_dir)), name="uploads")
 
 
 class QuizSubmissionCreate(BaseModel):

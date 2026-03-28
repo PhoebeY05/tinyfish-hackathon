@@ -84,7 +84,8 @@ export default function ResultsSection({ jobId, onReset }) {
     }, [jobId, job, status, results, error, pollError]);
 
     useEffect(() => {
-        if (!jobId || status === 'complete' || status === 'error') return;
+        if (!jobId || status === 'error') return;
+        if (status === 'complete' && job?.progress?.evidence_completed) return;
 
         const pollInterval = setInterval(async () => {
             try {
@@ -100,7 +101,9 @@ export default function ResultsSection({ jobId, onReset }) {
                     const resultsData = await resultsRes.json();
                     setResults(resultsData);
                     setStatus('complete');
-                    clearInterval(pollInterval);
+                    if (jobData.progress?.evidence_completed) {
+                        clearInterval(pollInterval);
+                    }
                 } else if (jobData.status === 'failed') {
                     setError(jobData.error || 'Job failed');
                     setStatus('error');
@@ -113,7 +116,7 @@ export default function ResultsSection({ jobId, onReset }) {
         }, 1200);
 
         return () => clearInterval(pollInterval);
-    }, [jobId, status]);
+    }, [jobId, status, job?.progress?.evidence_completed]);
 
     const handleResetClick = () => {
         clearCachedJobState(jobId);
@@ -196,9 +199,58 @@ export default function ResultsSection({ jobId, onReset }) {
         const avgConfidence = results.images?.length
             ? Math.round((results.images.reduce((sum, img) => sum + (img.predictions?.[0]?.confidence || 0), 0) / results.images.length) * 100)
             : 0;
+        const evidenceInBackground = Boolean(job?.progress?.evidence_background_running);
+        const evidenceDone = Boolean(job?.progress?.evidence_completed);
+        const evidenceNotification = job?.progress?.notification;
+        const processedSpeciesGroups = Number(job?.progress?.processed_species_groups || 0);
+        const totalSpeciesGroups = Number(job?.progress?.total_species_groups || 0);
+        const tinyfishLogs = Array.isArray(job?.progress?.logs)
+            ? job.progress.logs.filter((line) => typeof line === 'string' && line.includes('TinyFish')).slice(-80)
+            : [];
+
+        const speciesLogMap = {};
+        let activeSpeciesKey = null;
+        tinyfishLogs.forEach((line) => {
+            const groupMatch = line.match(/\(([^,]+),\s*\d+\s*images\)/i);
+            if (groupMatch?.[1]) {
+                activeSpeciesKey = groupMatch[1].trim().toLowerCase();
+                if (!speciesLogMap[activeSpeciesKey]) {
+                    speciesLogMap[activeSpeciesKey] = [];
+                }
+                speciesLogMap[activeSpeciesKey].push(line);
+                return;
+            }
+
+            if (activeSpeciesKey) {
+                if (!speciesLogMap[activeSpeciesKey]) {
+                    speciesLogMap[activeSpeciesKey] = [];
+                }
+                speciesLogMap[activeSpeciesKey].push(line);
+            }
+        });
 
         return (
             <div className="space-y-6">
+                {evidenceInBackground || evidenceDone ? (
+                    <div
+                        className="p-4 border"
+                        style={{
+                            borderColor: evidenceDone ? 'var(--accent2)' : 'var(--border)',
+                            borderWidth: '1px',
+                            backgroundColor: evidenceDone ? '#f7fbf8' : '#fafaf8',
+                        }}
+                    >
+                        <p className="text-sm font-mono" style={{ color: 'var(--ink)' }}>
+                            {evidenceNotification || (evidenceDone ? 'Evidence search completed.' : 'TinyFish evidence search is still running in background...')}
+                        </p>
+                        {totalSpeciesGroups > 0 ? (
+                            <p className="text-xs font-mono mt-2" style={{ color: 'var(--muted)' }}>
+                                Evidence groups processed: {processedSpeciesGroups} / {totalSpeciesGroups}
+                            </p>
+                        ) : null}
+                    </div>
+                ) : null}
+
                 {/* Summary Bar */}
                 <div
                     className="grid grid-cols-2 sm:grid-cols-4 gap-4 p-6 sm:p-8 border"
@@ -256,9 +308,13 @@ export default function ResultsSection({ jobId, onReset }) {
 
                 {/* Image Cards Grid */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    {results.images?.map((image) => (
-                        <ImageCard key={image.image_id} image={image} />
-                    ))}
+                    {results.images?.map((image) => {
+                        const speciesKey = (image.primary_prediction?.common_name || '').trim().toLowerCase();
+                        const scopedLogs = speciesLogMap[speciesKey] || [];
+                        return (
+                            <ImageCard key={image.image_id} image={image} tinyfishLogs={scopedLogs} jobId={jobId} />
+                        );
+                    })}
                 </div>
 
                 {/* Reset Button */}

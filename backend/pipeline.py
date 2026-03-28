@@ -5,8 +5,10 @@ import concurrent.futures
 import json
 import os
 import random
+import re
 import shutil
 import threading
+import time
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -526,6 +528,31 @@ def compute_dispute(primary_confidence: float, primary_name: str, evidence: list
     }
 
 
+def _loading_location_context(geography: str) -> dict[str, str]:
+    return {
+        "country": geography,
+        "last_spotted_text": "Loading recent sightings from TinyFish...",
+        "source": "TinyFish",
+    }
+
+
+def _location_context_from_evidence(geography: str, evidence: list[dict[str, Any]]) -> dict[str, str]:
+    for item in evidence:
+        extracted_claim = item.get("extracted_claim")
+        if item.get("type") == "live_sighting" and isinstance(extracted_claim, str) and extracted_claim.strip():
+            return {
+                "country": geography,
+                "last_spotted_text": extracted_claim.strip(),
+                "source": item.get("source") or "TinyFish",
+            }
+
+    return {
+        "country": geography,
+        "last_spotted_text": "No recent sightings found from TinyFish yet.",
+        "source": "TinyFish",
+    }
+
+
 def _extract_zip_images(zip_path: Path, output_dir: Path) -> list[Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     extracted: list[Path] = []
@@ -589,13 +616,21 @@ def _render_html_report(report: dict[str, Any]) -> str:
 """.format(generated_at=report["generated_at"], cards="\n".join(cards))
 
 
-def build_report_bundle(report_dir: Path, report: dict[str, Any]) -> dict[str, str]:
+def _safe_species_folder_name(name: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9 _-]+", "", (name or "Unknown Species").strip())
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned or "Unknown Species"
+
+
+def build_report_bundle(report_dir: Path, report: dict[str, Any], extraction_dir: Path | None = None) -> dict[str, str]:
     report_dir.mkdir(parents=True, exist_ok=True)
 
     report_json = report_dir / "report.json"
     citations_json = report_dir / "citations.json"
     report_html = report_dir / "index.html"
     report_zip = report_dir / "bird-report.zip"
+    species_groups_dir = report_dir / "species_groups"
+    species_groups_zip = report_dir / "species-groups.zip"
 
     citations = []
     for image in report["images"]:
@@ -613,16 +648,53 @@ def build_report_bundle(report_dir: Path, report: dict[str, Any]) -> dict[str, s
     citations_json.write_text(json.dumps(citations, indent=2), encoding="utf-8")
     report_html.write_text(_render_html_report(report), encoding="utf-8")
 
+    if species_groups_dir.exists():
+        shutil.rmtree(species_groups_dir)
+    species_groups_dir.mkdir(parents=True, exist_ok=True)
+
+    if extraction_dir and extraction_dir.exists():
+        per_species_counts: dict[str, int] = {}
+        for image in report.get("images", []):
+            file_name = image.get("file_name")
+            if not file_name:
+                continue
+
+            source_path = extraction_dir / file_name
+            if not source_path.exists():
+                continue
+
+            species_name = image.get("primary_prediction", {}).get("common_name", "Unknown Species")
+            folder_name = _safe_species_folder_name(species_name)
+            target_folder = species_groups_dir / folder_name
+            target_folder.mkdir(parents=True, exist_ok=True)
+
+            stem = source_path.stem
+            suffix = source_path.suffix
+            per_species_counts.setdefault(folder_name, 0)
+            per_species_counts[folder_name] += 1
+            ordinal = per_species_counts[folder_name]
+            target_name = f"{ordinal:03d}_{stem}{suffix}"
+
+            shutil.copy2(source_path, target_folder / target_name)
+
+    with zipfile.ZipFile(species_groups_zip, "w", zipfile.ZIP_DEFLATED) as archive:
+        for file_path in species_groups_dir.rglob("*"):
+            if file_path.is_file():
+                archive.write(file_path, arcname=str(file_path.relative_to(species_groups_dir)))
+
     with zipfile.ZipFile(report_zip, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.write(report_json, arcname="report.json")
         archive.write(citations_json, arcname="citations.json")
         archive.write(report_html, arcname="index.html")
+        archive.write(species_groups_zip, arcname="species-groups.zip")
 
     return {
         "report_json_path": str(report_json),
         "citations_path": str(citations_json),
         "report_html_path": str(report_html),
         "zip_path": str(report_zip),
+        "species_groups_dir": str(species_groups_dir),
+        "species_groups_zip_path": str(species_groups_zip),
     }
 
 
@@ -664,17 +736,19 @@ def process_job(job_id: str, store: JobStore, settings: Settings) -> None:
             job_id,
             progress={
                 "current_step": "classifying_images",
+                "phase": "classification",
                 "total_images": len(images),
                 "processed_images": 0,
+                "classification_completed": False,
+                "evidence_completed": False,
             },
             artifacts={"extraction_dir": str(extraction_dir)},
         )
 
-        image_reports: list[dict[str, Any]] = []
-        image_reports_lock = threading.Lock()
+        classified_results: list[dict[str, Any]] = []
 
         def process_single_image(index: int, image_path: Path) -> dict[str, Any]:
-            # Use OpenAI classification if enabled, otherwise use placeholder
+            # Phase 1: classify only (no evidence lookups in this stage).
             if settings.enable_openai_classification:
                 push_log(f"OpenAI: classifying image {index}/{len(images)} ({image_path.name}).")
                 prediction = classify_image_with_openai(image_path, settings)
@@ -682,9 +756,8 @@ def process_job(job_id: str, store: JobStore, settings: Settings) -> None:
             else:
                 prediction = _fallback_classify_image(image_path.name)
                 push_log(f"OpenAI disabled: used fallback classifier for {image_path.name}.")
-            
-            primary_common = prediction["primary"]["common_name"]
-            primary_common, primary_sci = normalize_species(primary_common)
+
+            primary_common, primary_sci = normalize_species(prediction["primary"]["common_name"])
 
             alternates = []
             for alt in prediction["alternates"]:
@@ -697,62 +770,14 @@ def process_job(job_id: str, store: JobStore, settings: Settings) -> None:
                     }
                 )
 
-            include_community = prediction["primary"]["confidence"] < 0.75
-            candidate_names = [prediction["primary"]["common_name"]] + [a["common_name"] for a in prediction["alternates"]]
-            combined_evidence = []
-            provider_errors = []
-
-            for candidate in candidate_names:
-                lookup = tinyfish_evidence_lookup(
-                    settings=settings,
-                    species=candidate,
-                    geography=job.metadata["geography"],
-                    include_community=include_community,
-                    on_log=push_log,
-                )
-                combined_evidence.extend(lookup.get("evidence", []))
-                if lookup.get("failed"):
-                    provider_errors.append(lookup.get("error", "TinyFish lookup failed"))
-
-            dispute = compute_dispute(
-                primary_confidence=prediction["primary"]["confidence"],
-                primary_name=prediction["primary"]["common_name"],
-                evidence=combined_evidence,
-            )
-
             return {
                 "index": index,
-                "payload": {
-                    "image_id": f"img_{index:03d}",
-                    "file_name": image_path.name,
-                    "primary_prediction": {
-                        "common_name": primary_common,
-                        "scientific_name": primary_sci,
-                        "confidence": prediction["primary"]["confidence"],
-                    },
-                    "alternate_candidates": alternates,
-                    "location_context": {
-                        "country": job.metadata["geography"],
-                        "last_spotted_text": f"Last reported in {job.metadata['geography']} 3 days ago",
-                        "source": "eBird",
-                    },
-                    "evidence": [
-                        {
-                            "source": "model_inference",
-                            "type": "model_prediction",
-                            "supports": prediction["primary"]["common_name"],
-                            "citation_url": None,
-                            "extracted_claim": f"Model {prediction['model']} predicted {prediction['primary']['common_name']}",
-                        },
-                        *combined_evidence,
-                    ],
-                    "confidence_dispute": {
-                        "status": dispute["status"],
-                        "reason": dispute["reason"],
-                    },
-                    "review_status": dispute["review_status"],
-                    "provider_errors": provider_errors,
-                },
+                "file_name": image_path.name,
+                "prediction": prediction,
+                "primary_common": primary_common,
+                "primary_sci": primary_sci,
+                "alternates": alternates,
+                "include_community": prediction["primary"]["confidence"] < 0.75,
             }
 
         # Run all image jobs concurrently (configurable via env, defaults to all images).
@@ -764,7 +789,7 @@ def process_job(job_id: str, store: JobStore, settings: Settings) -> None:
             except ValueError:
                 max_workers = len(images)
 
-        push_log(f"Running {len(images)} image pipelines with max_workers={max_workers}.")
+        push_log(f"Running classification for {len(images)} images with max_workers={max_workers}.")
         processed_count = 0
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -776,17 +801,78 @@ def process_job(job_id: str, store: JobStore, settings: Settings) -> None:
             for future in concurrent.futures.as_completed(futures):
                 idx, file_name = futures[future]
                 result = future.result()
-                with image_reports_lock:
-                    image_reports.append(result)
+                classified_results.append(result)
                 processed_count += 1
-                push_log(f"Completed image {idx}/{len(images)} ({file_name}).")
+                push_log(f"Classification completed for image {idx}/{len(images)} ({file_name}).")
                 store.update_job(
                     job_id,
-                    progress={"processed_images": processed_count, "current_step": "collecting_evidence"},
+                    progress={
+                        "processed_images": processed_count,
+                        "current_step": "classifying_images",
+                        "phase": "classification",
+                    },
                 )
 
-        image_reports.sort(key=lambda item: item["index"])
-        ordered_reports = [item["payload"] for item in image_reports]
+        classified_results.sort(key=lambda item: item["index"])
+        push_log("Classification phase completed. Grouping images by predicted species.")
+
+        species_groups: dict[str, dict[str, Any]] = {}
+        for item in classified_results:
+            key = (item["primary_common"] or "Unknown Species").strip().lower()
+            if not key:
+                key = "unknown species"
+
+            group = species_groups.setdefault(
+                key,
+                {
+                    "species_common": item["primary_common"],
+                    "species_scientific": item["primary_sci"],
+                    "include_community": False,
+                    "image_indices": [],
+                },
+            )
+            group["include_community"] = group["include_community"] or item["include_community"]
+            group["image_indices"].append(item["index"])
+
+        ordered_reports: list[dict[str, Any]] = []
+        for item in classified_results:
+            prediction = item["prediction"]
+            all_evidence = [
+                {
+                    "source": "model_inference",
+                    "type": "model_prediction",
+                    "supports": prediction["primary"]["common_name"],
+                    "citation_url": None,
+                    "extracted_claim": f"Model {prediction['model']} predicted {prediction['primary']['common_name']}",
+                }
+            ]
+
+            dispute = compute_dispute(
+                primary_confidence=prediction["primary"]["confidence"],
+                primary_name=prediction["primary"]["common_name"],
+                evidence=all_evidence,
+            )
+
+            ordered_reports.append(
+                {
+                    "image_id": f"img_{item['index']:03d}",
+                    "file_name": item["file_name"],
+                    "primary_prediction": {
+                        "common_name": item["primary_common"],
+                        "scientific_name": item["primary_sci"],
+                        "confidence": prediction["primary"]["confidence"],
+                    },
+                    "alternate_candidates": item["alternates"],
+                    "location_context": _loading_location_context(job.metadata["geography"]),
+                    "evidence": all_evidence,
+                    "confidence_dispute": {
+                        "status": dispute["status"],
+                        "reason": dispute["reason"],
+                    },
+                    "review_status": dispute["review_status"],
+                    "provider_errors": [],
+                }
+            )
 
         report = {
             "job_id": job_id,
@@ -795,18 +881,234 @@ def process_job(job_id: str, store: JobStore, settings: Settings) -> None:
             "images": ordered_reports,
         }
 
-        store.update_job(job_id, progress={"current_step": "building_report"})
-        push_log("Building report bundle and citations.")
-        bundle = build_report_bundle(settings.report_dir / job_id, report)
+        store.update_job(job_id, progress={"current_step": "building_report", "phase": "classification"})
+        push_log("Building report bundle and citations from classification output.")
+        bundle = build_report_bundle(settings.report_dir / job_id, report, extraction_dir=extraction_dir)
 
         store.update_job(
             job_id,
             status="completed",
-            progress={"current_step": "completed"},
+            progress={
+                "current_step": "completed",
+                "phase": "classification",
+                "classification_completed": True,
+                "evidence_completed": False,
+                "evidence_background_running": True,
+                "notification": "Classification report ready. TinyFish evidence is continuing in background.",
+            },
             results=report,
             artifacts=bundle,
         )
-        push_log("Analysis completed successfully.")
+        push_log("Classification output is ready. Download is available now.")
+
+        total_species_groups = len(species_groups)
+        evidence_delay_seconds = 1.5
+        evidence_delay_env = os.environ.get("EVIDENCE_GROUP_LOOKUP_DELAY_SECONDS")
+        if evidence_delay_env:
+            try:
+                evidence_delay_seconds = max(0.0, float(evidence_delay_env))
+            except ValueError:
+                evidence_delay_seconds = 1.5
+
+        def enrich_evidence_in_background() -> None:
+            try:
+                classified_by_index = {item["index"]: item for item in classified_results}
+
+                store.update_job(
+                    job_id,
+                    progress={
+                        "current_step": "collecting_evidence",
+                        "phase": "evidence",
+                        "evidence_background_running": True,
+                        "evidence_completed": False,
+                        "total_species_groups": total_species_groups,
+                        "processed_species_groups": 0,
+                        "notification": "TinyFish evidence search running in background.",
+                    },
+                )
+                push_log(
+                    f"Starting background evidence search for {total_species_groups} species groups (delay={evidence_delay_seconds:.1f}s)."
+                )
+
+                evidence_by_image_index: dict[int, list[dict[str, Any]]] = {}
+                provider_errors_by_image_index: dict[int, list[str]] = {}
+
+                for idx, group in enumerate(species_groups.values(), start=1):
+                    species_name = group["species_common"]
+                    group_indexes: list[int] = group["image_indices"]
+                    push_log(
+                        f"TinyFish: collecting evidence for species group {idx}/{total_species_groups} "
+                        f"({species_name}, {len(group_indexes)} images)."
+                    )
+
+                    lookup = tinyfish_evidence_lookup(
+                        settings=settings,
+                        species=species_name,
+                        geography=job.metadata["geography"],
+                        include_community=bool(group["include_community"]),
+                        on_log=push_log,
+                    )
+
+                    group_evidence = lookup.get("evidence", [])
+                    group_errors: list[str] = []
+                    if lookup.get("failed"):
+                        group_errors.append(lookup.get("error", "TinyFish lookup failed"))
+
+                    for image_index in group_indexes:
+                        evidence_by_image_index.setdefault(image_index, []).extend(group_evidence)
+                        if group_errors:
+                            provider_errors_by_image_index.setdefault(image_index, []).extend(group_errors)
+
+                    latest_job = store.get_job(job_id)
+                    current_report = latest_job.results if latest_job and latest_job.results else None
+                    if current_report and isinstance(current_report.get("images"), list):
+                        updated_images: list[dict[str, Any]] = []
+                        for image in current_report["images"]:
+                            image_copy = dict(image)
+                            image_id = str(image_copy.get("image_id", ""))
+                            try:
+                                image_index = int(image_id.split("_")[-1])
+                            except Exception:
+                                updated_images.append(image_copy)
+                                continue
+
+                            if image_index in group_indexes:
+                                existing_evidence = image_copy.get("evidence", [])
+                                image_copy["evidence"] = [*existing_evidence, *group_evidence]
+
+                                existing_errors = image_copy.get("provider_errors", [])
+                                image_copy["provider_errors"] = [*existing_errors, *group_errors]
+                                image_copy["location_context"] = _location_context_from_evidence(
+                                    job.metadata["geography"],
+                                    image_copy["evidence"],
+                                )
+
+                                classified_item = classified_by_index.get(image_index)
+                                if classified_item:
+                                    prediction = classified_item["prediction"]
+                                    dispute = compute_dispute(
+                                        primary_confidence=prediction["primary"]["confidence"],
+                                        primary_name=prediction["primary"]["common_name"],
+                                        evidence=image_copy["evidence"],
+                                    )
+                                    image_copy["confidence_dispute"] = {
+                                        "status": dispute["status"],
+                                        "reason": dispute["reason"],
+                                    }
+                                    image_copy["review_status"] = dispute["review_status"]
+
+                            updated_images.append(image_copy)
+
+                        incremental_report = {
+                            "job_id": current_report.get("job_id", job_id),
+                            "generated_at": now_iso(),
+                            "geography": current_report.get("geography", job.metadata["geography"]),
+                            "images": updated_images,
+                        }
+                        store.update_job(job_id, results=incremental_report)
+
+                    store.update_job(
+                        job_id,
+                        progress={
+                            "current_step": "collecting_evidence",
+                            "phase": "evidence",
+                            "processed_species_groups": idx,
+                            "total_species_groups": total_species_groups,
+                        },
+                    )
+
+                    if idx < total_species_groups and evidence_delay_seconds > 0:
+                        push_log(f"TinyFish: throttling for {evidence_delay_seconds:.1f}s before next species group.")
+                        time.sleep(evidence_delay_seconds)
+
+                enriched_images: list[dict[str, Any]] = []
+                for item in classified_results:
+                    prediction = item["prediction"]
+                    image_evidence = evidence_by_image_index.get(item["index"], [])
+                    provider_errors = provider_errors_by_image_index.get(item["index"], [])
+
+                    all_evidence = [
+                        {
+                            "source": "model_inference",
+                            "type": "model_prediction",
+                            "supports": prediction["primary"]["common_name"],
+                            "citation_url": None,
+                            "extracted_claim": f"Model {prediction['model']} predicted {prediction['primary']['common_name']}",
+                        },
+                        *image_evidence,
+                    ]
+
+                    dispute = compute_dispute(
+                        primary_confidence=prediction["primary"]["confidence"],
+                        primary_name=prediction["primary"]["common_name"],
+                        evidence=all_evidence,
+                    )
+
+                    enriched_images.append(
+                        {
+                            "image_id": f"img_{item['index']:03d}",
+                            "file_name": item["file_name"],
+                            "primary_prediction": {
+                                "common_name": item["primary_common"],
+                                "scientific_name": item["primary_sci"],
+                                "confidence": prediction["primary"]["confidence"],
+                            },
+                            "alternate_candidates": item["alternates"],
+                            "location_context": _location_context_from_evidence(
+                                job.metadata["geography"],
+                                all_evidence,
+                            ),
+                            "evidence": all_evidence,
+                            "confidence_dispute": {
+                                "status": dispute["status"],
+                                "reason": dispute["reason"],
+                            },
+                            "review_status": dispute["review_status"],
+                            "provider_errors": provider_errors,
+                        }
+                    )
+
+                enriched_report = {
+                    "job_id": job_id,
+                    "generated_at": now_iso(),
+                    "geography": job.metadata["geography"],
+                    "images": enriched_images,
+                }
+
+                push_log("Rebuilding report bundle with TinyFish evidence.")
+                enriched_bundle = build_report_bundle(settings.report_dir / job_id, enriched_report, extraction_dir=extraction_dir)
+
+                store.update_job(
+                    job_id,
+                    status="completed",
+                    progress={
+                        "current_step": "evidence_completed",
+                        "phase": "evidence",
+                        "evidence_background_running": False,
+                        "evidence_completed": True,
+                        "classification_completed": True,
+                        "processed_species_groups": total_species_groups,
+                        "total_species_groups": total_species_groups,
+                        "notification": "Evidence search completed.",
+                    },
+                    results=enriched_report,
+                    artifacts=enriched_bundle,
+                )
+                push_log("Evidence search completed and report updated.")
+            except Exception as exc:
+                push_log(f"Evidence background process failed: {exc}")
+                store.update_job(
+                    job_id,
+                    progress={
+                        "current_step": "evidence_failed",
+                        "phase": "evidence",
+                        "evidence_background_running": False,
+                        "evidence_completed": False,
+                        "notification": "Evidence search failed. Classification report is still available.",
+                    },
+                )
+
+        threading.Thread(target=enrich_evidence_in_background, daemon=True).start()
     except Exception as exc:
         prior_logs = job.progress.get("logs", []) if isinstance(job.progress.get("logs"), list) else []
         store.update_job(

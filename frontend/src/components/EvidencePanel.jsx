@@ -1,6 +1,28 @@
-export default function EvidencePanel({ evidence }) {
+export default function EvidencePanel({ evidence, tinyfishLogs = [] }) {
     return (
         <div className="space-y-2 mt-3">
+            {tinyfishLogs.length > 0 ? (
+                <div
+                    className="p-3 border"
+                    style={{
+                        borderColor: 'var(--accent2)',
+                        borderWidth: '1px',
+                        backgroundColor: '#fefdf4',
+                    }}
+                >
+                    <p className="font-mono text-xs font-bold uppercase mb-2" style={{ color: 'var(--accent2)' }}>
+                        TinyFish Logs
+                    </p>
+                    <div className="space-y-1 max-h-36 overflow-y-auto">
+                        {tinyfishLogs.map((line, idx) => (
+                            <p key={`${idx}-${line}`} className="text-xs font-mono" style={{ color: 'var(--ink)' }}>
+                                {line}
+                            </p>
+                        ))}
+                    </div>
+                </div>
+            ) : null}
+
             {evidence.map((item, idx) => (
                 <div
                     key={idx}

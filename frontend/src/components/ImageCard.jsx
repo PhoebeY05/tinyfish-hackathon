@@ -2,7 +2,7 @@ import { useState } from 'react';
 import DisputeBadge from './DisputeBadge';
 import EvidencePanel from './EvidencePanel';
 
-export default function ImageCard({ image }) {
+export default function ImageCard({ image, tinyfishLogs = [], jobId }) {
     const [expandEvidence, setExpandEvidence] = useState(false);
 
     const primary = image.primary_prediction;
@@ -11,6 +11,10 @@ export default function ImageCard({ image }) {
     const confidencePercent = Math.round((primary.confidence || 0) * 100);
     const confidenceColor =
         primary.confidence >= 0.8 ? 'var(--success)' : primary.confidence >= 0.65 ? 'var(--accent2)' : 'var(--danger)';
+    const imageFileName = image.file_name || image.filename;
+    const imageSrc = jobId && imageFileName
+        ? `/uploads/${jobId}/images/${encodeURIComponent(imageFileName)}`
+        : null;
 
     return (
         <div
@@ -29,14 +33,16 @@ export default function ImageCard({ image }) {
                     style={{
                         borderColor: 'var(--border)',
                         backgroundColor: '#f9f7f4',
-                        backgroundImage: image.filename
-                            ? `url('data:image/jpeg;base64,${image.filename.substring(0, 100)}...')`
-                            : 'none',
-                        backgroundSize: 'cover',
-                        backgroundPosition: 'center',
                     }}
                 >
-                    {!image.filename && (
+                    {imageSrc ? (
+                        <img
+                            src={imageSrc}
+                            alt={imageFileName || 'Bird image'}
+                            className="w-full h-full object-cover"
+                            loading="lazy"
+                        />
+                    ) : (
                         <div className="w-full h-full flex items-center justify-center text-3xl">🦅</div>
                     )}
                 </div>
@@ -130,7 +136,7 @@ export default function ImageCard({ image }) {
                 </button>
 
                 {/* Evidence Panel */}
-                {expandEvidence && <EvidencePanel evidence={image.evidence || []} />}
+                {expandEvidence && <EvidencePanel evidence={image.evidence || []} tinyfishLogs={tinyfishLogs} />}
 
                 {/* Dispute Box */}
                 {dispute.status !== 'no_dispute' && (

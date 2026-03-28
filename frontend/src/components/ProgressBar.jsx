@@ -11,6 +11,7 @@ export default function ProgressBar({ job }) {
         extracting_zip: 'Extracting images...',
         classifying_images: 'Classifying species...',
         collecting_evidence: 'Gathering evidence...',
+        evidence_completed: 'Evidence search completed',
         building_report: 'Building report...',
         completed: 'Complete',
         failed: 'Failed',
@@ -56,6 +57,14 @@ export default function ProgressBar({ job }) {
                     </p>
                 </div>
             </div>
+
+            {progress.evidence_completed && progress.notification ? (
+                <div className="p-3 border" style={{ borderColor: 'var(--accent2)', backgroundColor: '#f7fbf8' }}>
+                    <p className="text-sm font-mono" style={{ color: 'var(--ink)' }}>
+                        {progress.notification}
+                    </p>
+                </div>
+            ) : null}
 
             {/* Progress Bar */}
             <div
