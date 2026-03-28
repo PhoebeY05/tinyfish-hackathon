@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import os
 import shutil
 from pathlib import Path
 from uuid import uuid4
 
+import psycopg2
 from dotenv import load_dotenv
-from fastapi import (BackgroundTasks, FastAPI, File, Form, HTTPException, Query,
-                     UploadFile)
+from fastapi import (BackgroundTasks, FastAPI, File, Form, HTTPException,
+                     Query, UploadFile)
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -19,11 +21,27 @@ load_dotenv()
 
 settings = load_settings()
 store = JobStore()
+DATABASE_URL = os.environ.get("DATABASE_URL")
 
 settings.upload_dir.mkdir(parents=True, exist_ok=True)
 settings.report_dir.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(title="TinyFish Bird Report MVP")
+
+
+@app.on_event("startup")
+def startup_database_connection() -> None:
+    if not DATABASE_URL:
+        raise RuntimeError("DATABASE_URL is required for PostgreSQL connection.")
+
+    app.state.db_conn = psycopg2.connect(DATABASE_URL, sslmode="require")
+
+
+@app.on_event("shutdown")
+def shutdown_database_connection() -> None:
+    db_conn = getattr(app.state, "db_conn", None)
+    if db_conn:
+        db_conn.close()
 
 
 @app.get("/api/quiz/species")
