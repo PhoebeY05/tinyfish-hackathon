@@ -38,7 +38,12 @@ class JobStore:
                 status="queued",
                 created_at=now,
                 updated_at=now,
-                progress={"total_images": 0, "processed_images": 0, "current_step": "queued"},
+                progress={
+                    "total_images": 0,
+                    "processed_images": 0,
+                    "current_step": "queued",
+                    "logs": ["Job queued. Waiting to start analysis."],
+                },
                 metadata=metadata,
             )
             self._jobs[job_id] = job

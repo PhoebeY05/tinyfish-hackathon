@@ -8,7 +8,7 @@ import shutil
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from openai import OpenAI
 from tinyfish import TinyFish
@@ -228,20 +228,43 @@ def _build_tinyfish_client(settings: Settings) -> TinyFish:
 
 
 def _run_tinyfish_agent(settings: Settings, url: str, goal: str) -> dict[str, Any] | list[Any]:
+    return _run_tinyfish_agent_with_logs(settings=settings, url=url, goal=goal, on_log=None)
+
+
+def _run_tinyfish_agent_with_logs(
+    settings: Settings,
+    url: str,
+    goal: str,
+    on_log: Callable[[str], None] | None,
+) -> dict[str, Any] | list[Any]:
     client = _build_tinyfish_client(settings)
     stream_chunks: list[str] = []
+
+    if on_log:
+        on_log(f"TinyFish: started agent call for {url}")
 
     with client.agent.stream(url=url, goal=goal) as stream:
         for event in stream:
             parsed = _extract_json_from_tinyfish_event(event)
             if isinstance(parsed, (dict, list)):
+                if on_log:
+                    on_log("TinyFish: received structured response.")
                 return parsed
-            stream_chunks.append(str(event))
+
+            event_text = str(event).strip()
+            if event_text:
+                stream_chunks.append(event_text)
+                if on_log:
+                    on_log(f"TinyFish stream: {event_text[:180]}")
 
     parsed = _extract_json_from_text("\n".join(stream_chunks))
     if isinstance(parsed, (dict, list)):
+        if on_log:
+            on_log("TinyFish: parsed JSON from stream output.")
         return parsed
 
+    if on_log:
+        on_log("TinyFish: stream ended without valid JSON output.")
     raise RuntimeError("TinyFish stream completed without valid JSON output.")
 
 
@@ -422,8 +445,12 @@ def tinyfish_evidence_lookup(
     species: str,
     geography: str,
     include_community: bool,
+    on_log: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     retrieval_time = now_iso()
+
+    if on_log:
+        on_log(f"TinyFish: collecting evidence for '{species}' in {geography}.")
 
     if not settings.enable_live_lookups:
         evidence = [
@@ -461,7 +488,7 @@ def tinyfish_evidence_lookup(
         return {"failed": False, "evidence": evidence}
 
     try:
-        tinyfish_result = _run_tinyfish_agent(
+        tinyfish_result = _run_tinyfish_agent_with_logs(
             settings=settings,
             url="https://ebird.org/",
             goal=(
@@ -474,12 +501,19 @@ def tinyfish_evidence_lookup(
                     else "Do not include community/reddit sources unless necessary."
                 )
             ),
+            on_log=on_log,
         )
         data = tinyfish_result if isinstance(tinyfish_result, dict) else {"evidence": tinyfish_result}
         if "evidence" not in data:
+            if on_log:
+                on_log("TinyFish: response missing evidence key.")
             return {"failed": True, "error": "TinyFish response missing evidence key.", "evidence": []}
+        if on_log:
+            on_log(f"TinyFish: collected {len(data['evidence'])} evidence items for '{species}'.")
         return {"failed": False, "evidence": data["evidence"]}
     except Exception as exc:
+        if on_log:
+            on_log(f"TinyFish error for '{species}': {exc}")
         return {"failed": True, "error": str(exc), "evidence": []}
 
 
@@ -612,13 +646,30 @@ def process_job(job_id: str, store: JobStore, settings: Settings) -> None:
         return
 
     try:
+        progress_logs: list[str] = []
+
+        def push_log(message: str) -> None:
+            entry = f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] {message}"
+            progress_logs.append(entry)
+            store.update_job(
+                job_id,
+                progress={
+                    "logs": progress_logs[-120:],
+                    "latest_log": entry,
+                },
+            )
+
+        push_log("Analysis started.")
         store.update_job(job_id, status="running", progress={"current_step": "extracting_zip"})
+        push_log("Extracting images from uploaded zip.")
 
         extraction_dir = settings.upload_dir / job_id / "images"
         images = _extract_zip_images(Path(job.metadata["upload_path"]), extraction_dir)
 
         if not images:
             raise RuntimeError("No supported image files found in the uploaded zip.")
+
+        push_log(f"Found {len(images)} supported images.")
 
         store.update_job(
             job_id,
@@ -635,9 +686,12 @@ def process_job(job_id: str, store: JobStore, settings: Settings) -> None:
         for index, image_path in enumerate(images, start=1):
             # Use OpenAI classification if enabled, otherwise use placeholder
             if settings.enable_openai_classification:
+                push_log(f"OpenAI: classifying image {index}/{len(images)} ({image_path.name}).")
                 prediction = classify_image_with_openai(image_path, settings)
+                push_log(f"OpenAI: classification complete for {image_path.name}.")
             else:
                 prediction = _fallback_classify_image(image_path.name)
+                push_log(f"OpenAI disabled: used fallback classifier for {image_path.name}.")
             
             primary_common = prediction["primary"]["common_name"]
             primary_common, primary_sci = normalize_species(primary_common)
@@ -664,6 +718,7 @@ def process_job(job_id: str, store: JobStore, settings: Settings) -> None:
                     species=candidate,
                     geography=job.metadata["geography"],
                     include_community=include_community,
+                    on_log=push_log,
                 )
                 combined_evidence.extend(lookup.get("evidence", []))
                 if lookup.get("failed"):
@@ -722,6 +777,7 @@ def process_job(job_id: str, store: JobStore, settings: Settings) -> None:
         }
 
         store.update_job(job_id, progress={"current_step": "building_report"})
+        push_log("Building report bundle and citations.")
         bundle = build_report_bundle(settings.report_dir / job_id, report)
 
         store.update_job(
@@ -731,7 +787,16 @@ def process_job(job_id: str, store: JobStore, settings: Settings) -> None:
             results=report,
             artifacts=bundle,
         )
+        push_log("Analysis completed successfully.")
     except Exception as exc:
+        prior_logs = job.progress.get("logs", []) if isinstance(job.progress.get("logs"), list) else []
+        store.update_job(
+            job_id,
+            progress={
+                "logs": [*prior_logs, f"[error] {exc}"][-120:],
+                "latest_log": f"[error] {exc}",
+            },
+        )
         store.update_job(
             job_id,
             status="failed",

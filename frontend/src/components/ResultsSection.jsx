@@ -181,7 +181,7 @@ export default function ResultsSection({ jobId, onReset }) {
                     }}
                 >
                     <h2 className="font-serif text-2xl font-bold mb-6" style={{ color: 'var(--ink)' }}>
-                        Processing
+                        Analyzing With OpenAI + TinyFish
                     </h2>
                     <ProgressBar job={job} />
                 </div>
