@@ -4,6 +4,7 @@ export default function ProgressBar({ job }) {
     const current = progress.processed_images || 0;
     const percent = total > 0 ? Math.round((current / total) * 100) : 0;
     const logs = Array.isArray(progress.logs) ? progress.logs : [];
+    const recentLogs = logs.slice(-12).join(' | ');
 
     const stepLabels = {
         queued: 'Queued',
@@ -16,8 +17,14 @@ export default function ProgressBar({ job }) {
     };
 
     const stepLabel = stepLabels[progress.current_step] || progress.current_step;
-    const openaiRunning = progress.current_step === 'classifying_images';
-    const tinyfishRunning = progress.current_step === 'collecting_evidence';
+    const isTerminal = progress.current_step === 'completed' || progress.current_step === 'failed';
+    const openaiRunning =
+        !isTerminal &&
+        (progress.current_step === 'classifying_images' || recentLogs.includes('OpenAI:'));
+    const tinyfishRunning =
+        !isTerminal &&
+        (progress.current_step === 'collecting_evidence' || recentLogs.includes('TinyFish'));
+    const showIndeterminate = !isTerminal && total > 0 && percent === 0;
 
     return (
         <div className="space-y-4">
@@ -52,20 +59,24 @@ export default function ProgressBar({ job }) {
 
             {/* Progress Bar */}
             <div
-                className="w-full h-3 border"
+                className="w-full h-3 border relative overflow-hidden"
                 style={{
                     borderColor: 'var(--border)',
                     borderWidth: '1px',
                     backgroundColor: '#fafaf8',
                 }}
             >
-                <div
-                    className="h-full transition-all duration-300"
-                    style={{
-                        width: `${percent}%`,
-                        backgroundColor: 'var(--accent)',
-                    }}
-                />
+                {showIndeterminate ? (
+                    <div className="progress-indeterminate" />
+                ) : (
+                    <div
+                        className="h-full transition-all duration-300"
+                        style={{
+                            width: `${percent}%`,
+                            backgroundColor: 'var(--accent)',
+                        }}
+                    />
+                )}
             </div>
 
             <p className="text-sm font-mono text-right" style={{ color: 'var(--muted)' }}>

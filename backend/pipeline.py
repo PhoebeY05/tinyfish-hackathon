@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import base64
+import concurrent.futures
 import json
 import os
 import random
 import shutil
+import threading
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -647,14 +649,17 @@ def process_job(job_id: str, store: JobStore, settings: Settings) -> None:
 
     try:
         progress_logs: list[str] = []
+        logs_lock = threading.Lock()
 
         def push_log(message: str) -> None:
             entry = f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] {message}"
-            progress_logs.append(entry)
+            with logs_lock:
+                progress_logs.append(entry)
+                logs_snapshot = progress_logs[-120:]
             store.update_job(
                 job_id,
                 progress={
-                    "logs": progress_logs[-120:],
+                    "logs": logs_snapshot,
                     "latest_log": entry,
                 },
             )
@@ -682,8 +687,9 @@ def process_job(job_id: str, store: JobStore, settings: Settings) -> None:
         )
 
         image_reports: list[dict[str, Any]] = []
+        image_reports_lock = threading.Lock()
 
-        for index, image_path in enumerate(images, start=1):
+        def process_single_image(index: int, image_path: Path) -> dict[str, Any]:
             # Use OpenAI classification if enabled, otherwise use placeholder
             if settings.enable_openai_classification:
                 push_log(f"OpenAI: classifying image {index}/{len(images)} ({image_path.name}).")
@@ -730,8 +736,9 @@ def process_job(job_id: str, store: JobStore, settings: Settings) -> None:
                 evidence=combined_evidence,
             )
 
-            image_reports.append(
-                {
+            return {
+                "index": index,
+                "payload": {
                     "image_id": f"img_{index:03d}",
                     "file_name": image_path.name,
                     "primary_prediction": {
@@ -761,19 +768,47 @@ def process_job(job_id: str, store: JobStore, settings: Settings) -> None:
                     },
                     "review_status": dispute["review_status"],
                     "provider_errors": provider_errors,
-                }
-            )
+                },
+            }
 
-            store.update_job(
-                job_id,
-                progress={"processed_images": index, "current_step": "collecting_evidence"},
-            )
+        # Run all image jobs concurrently (configurable via env, defaults to all images).
+        max_workers_env = os.environ.get("MAX_CONCURRENT_IMAGE_WORKERS")
+        max_workers = len(images)
+        if max_workers_env:
+            try:
+                max_workers = max(1, min(len(images), int(max_workers_env)))
+            except ValueError:
+                max_workers = len(images)
+
+        push_log(f"Running {len(images)} image pipelines with max_workers={max_workers}.")
+        processed_count = 0
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(process_single_image, idx, img_path): (idx, img_path.name)
+                for idx, img_path in enumerate(images, start=1)
+            }
+
+            for future in concurrent.futures.as_completed(futures):
+                idx, file_name = futures[future]
+                result = future.result()
+                with image_reports_lock:
+                    image_reports.append(result)
+                processed_count += 1
+                push_log(f"Completed image {idx}/{len(images)} ({file_name}).")
+                store.update_job(
+                    job_id,
+                    progress={"processed_images": processed_count, "current_step": "collecting_evidence"},
+                )
+
+        image_reports.sort(key=lambda item: item["index"])
+        ordered_reports = [item["payload"] for item in image_reports]
 
         report = {
             "job_id": job_id,
             "generated_at": now_iso(),
             "geography": job.metadata["geography"],
-            "images": image_reports,
+            "images": ordered_reports,
         }
 
         store.update_job(job_id, progress={"current_step": "building_report"})

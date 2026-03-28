@@ -116,3 +116,23 @@
 .animate-pulse-custom {
     animation: pulse-custom 1s infinite;
 }
+
+@keyframes progress-indeterminate {
+    0% {
+        transform: translateX(-120%);
+    }
+
+    100% {
+        transform: translateX(320%);
+    }
+}
+
+.progress-indeterminate {
+    position: absolute;
+    top: 0;
+    left: 0;
+    height: 100%;
+    width: 35%;
+    background: linear-gradient(90deg, rgba(45, 90, 27, 0.15), var(--accent), rgba(45, 90, 27, 0.15));
+    animation: progress-indeterminate 1.2s ease-in-out infinite;
+}
