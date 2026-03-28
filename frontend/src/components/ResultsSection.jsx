@@ -204,6 +204,11 @@ export default function ResultsSection({ jobId, onReset }) {
         const avgConfidence = results.images?.length
             ? Math.round((results.images.reduce((sum, img) => sum + (img.primary_prediction?.confidence || 0), 0) / results.images.length) * 100)
             : 0;
+        const sortedImages = [...(results.images || [])].sort((a, b) => {
+            const aName = (a.primary_prediction?.common_name || '').trim().toLowerCase();
+            const bName = (b.primary_prediction?.common_name || '').trim().toLowerCase();
+            return aName.localeCompare(bName);
+        });
         const evidenceInBackground = Boolean(job?.progress?.evidence_background_running);
         const evidenceDone = Boolean(job?.progress?.evidence_completed);
         const evidenceNotification = job?.progress?.notification;
@@ -312,7 +317,7 @@ export default function ResultsSection({ jobId, onReset }) {
 
                 {/* Image Cards Grid */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    {results.images?.map((image) => {
+                    {sortedImages.map((image) => {
                         const speciesKey = (image.primary_prediction?.common_name || '').trim().toLowerCase();
                         const scopedLogs = speciesLogMap[speciesKey] || [];
                         const isSpeciesLive = Boolean(speciesLiveStateMap[speciesKey]);

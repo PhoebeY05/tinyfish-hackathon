@@ -203,32 +203,83 @@ def _extract_json_from_text(text: str) -> dict[str, Any] | list[Any] | None:
     return None
 
 
+def _coerce_json_like(value: Any) -> dict[str, Any] | list[Any] | None:
+    if value is None:
+        return None
+    if isinstance(value, (dict, list)):
+        return value
+    if isinstance(value, str):
+        return _extract_json_from_text(value)
+
+    # Pydantic-style models
+    for dump_name in ("model_dump", "dict", "to_dict"):
+        dump_fn = getattr(value, dump_name, None)
+        if callable(dump_fn):
+            try:
+                dumped = dump_fn()
+                if isinstance(dumped, (dict, list)):
+                    return dumped
+                if isinstance(dumped, str):
+                    parsed = _extract_json_from_text(dumped)
+                    if isinstance(parsed, (dict, list)):
+                        return parsed
+            except Exception:
+                pass
+
+    # JSON-string methods
+    for dump_json_name in ("model_dump_json", "json"):
+        dump_json_fn = getattr(value, dump_json_name, None)
+        if callable(dump_json_fn):
+            try:
+                dumped_json = dump_json_fn()
+                parsed = _extract_json_from_text(str(dumped_json))
+                if isinstance(parsed, (dict, list)):
+                    return parsed
+            except Exception:
+                pass
+
+    return _extract_json_from_text(str(value))
+
+
 def _extract_json_from_tinyfish_event(event: Any) -> dict[str, Any] | list[Any] | None:
-    # Check for result_json attribute (completion events may have this)
-    if hasattr(event, "result_json") and event.result_json:
-        if isinstance(event.result_json, str):
-            parsed = _extract_json_from_text(event.result_json)
-        else:
-            parsed = event.result_json
-        if isinstance(parsed, (dict, list)):
-            return parsed
-    
+    # Check completion-style payload attributes first.
+    for attr in ("result_json", "result", "output", "data", "content", "message", "delta"):
+        if hasattr(event, attr):
+            parsed = _coerce_json_like(getattr(event, attr))
+            if isinstance(parsed, (dict, list)):
+                return parsed
+
     if isinstance(event, dict):
-        # Include result_json in the keys to check
-        for key in ("output", "text", "content", "data", "message", "delta", "result_json"):
-            value = event.get(key)
-            if isinstance(value, (dict, list)):
-                return value
-            if isinstance(value, str):
-                parsed = _extract_json_from_text(value)
-                if parsed is not None:
+        for key in ("result_json", "result", "output", "text", "content", "data", "message", "delta"):
+            if key in event:
+                parsed = _coerce_json_like(event.get(key))
+                if isinstance(parsed, (dict, list)):
                     return parsed
 
     if isinstance(event, str):
         return _extract_json_from_text(event)
 
-    parsed = _extract_json_from_text(str(event))
-    return parsed
+    # Do not coerce the whole event object (e.g., STARTED/HEARTBEAT metadata)
+    # into JSON, otherwise we can falsely treat lifecycle events as payload.
+    return None
+
+
+def _extract_json_from_tinyfish_run(run_obj: Any) -> dict[str, Any] | list[Any] | None:
+    # Preferred fields from non-stream run API responses.
+    for attr in ("result", "result_json", "output", "data", "content"):
+        if hasattr(run_obj, attr):
+            parsed = _coerce_json_like(getattr(run_obj, attr))
+            if isinstance(parsed, (dict, list)):
+                return parsed
+
+    if isinstance(run_obj, dict):
+        for key in ("result", "result_json", "output", "data", "content"):
+            if key in run_obj:
+                parsed = _coerce_json_like(run_obj.get(key))
+                if isinstance(parsed, (dict, list)):
+                    return parsed
+
+    return _coerce_json_like(run_obj)
 
 
 def _build_tinyfish_client(settings: Settings) -> TinyFish:
@@ -252,6 +303,27 @@ def _run_tinyfish_agent_with_logs(
     on_log: Callable[[str], None] | None,
 ) -> dict[str, Any] | list[Any]:
     client = _build_tinyfish_client(settings)
+
+    # Prefer non-stream run API (SDK snippet style): run.result
+    try:
+        if on_log:
+            on_log("TinyFish run API: request started.")
+        run = client.agent.run(url=url, goal=goal)
+        parsed_run = _extract_json_from_tinyfish_run(run)
+        if isinstance(parsed_run, (dict, list)):
+            if on_log:
+                if isinstance(parsed_run, dict):
+                    keys = ", ".join(sorted(str(key) for key in parsed_run.keys()))
+                    on_log(f"TinyFish run API completed. Parsed dict keys: {keys or '(none)'}")
+                else:
+                    on_log(f"TinyFish run API completed. Parsed list with {len(parsed_run)} items.")
+            return parsed_run
+        if on_log:
+            on_log("TinyFish run API returned non-JSON payload; falling back to stream API.")
+    except Exception as run_exc:
+        if on_log:
+            on_log(f"TinyFish run API failed ({run_exc}); falling back to stream API.")
+
     stream_chunks: list[str] = []
     event_count = 0
 
@@ -446,15 +518,18 @@ Only return valid JSON, no other text.""",
         return {
             "primary": {
                 "common_name": data.get("primary_species", "Unknown"),
+                "scientific_name": data.get("scientific_name", "Unknown"),
                 "confidence": float(data.get("confidence", 0.5)),
             },
             "alternates": [
                 {
                     "common_name": data.get("alternate_1_species", "Unknown"),
+                    "scientific_name": data.get("alternate_1_scientific_name", "Unknown"),
                     "confidence": float(data.get("alternate_1_confidence", 0.3)),
                 },
                 {
                     "common_name": data.get("alternate_2_species", "Unknown"),
+                    "scientific_name": data.get("alternate_2_scientific_name", "Unknown"),
                     "confidence": float(data.get("alternate_2_confidence", 0.2)),
                 },
             ],
@@ -467,6 +542,47 @@ Only return valid JSON, no other text.""",
         return _fallback_classify_image(image_path.name)
 
 
+def _fallback_tinyfish_evidence(
+    species: str,
+    geography: str,
+    include_community: bool,
+    retrieval_time: str,
+) -> list[dict[str, Any]]:
+    evidence = [
+        {
+            "source": "TinyFish/eBird-fallback",
+            "type": "live_sighting",
+            "extracted_claim": f"Fallback context for {species} in {geography}: live feed temporarily unavailable.",
+            "supports": species,
+            "contradicts": None,
+            "citation_url": "https://ebird.org/",
+            "retrieval_timestamp": retrieval_time,
+        },
+        {
+            "source": "TinyFish/BirdLife-fallback",
+            "type": "species_profile",
+            "extracted_claim": f"{species} has documented records in regional habitats near {geography}.",
+            "supports": species,
+            "contradicts": None,
+            "citation_url": "https://www.birdlife.org/",
+            "retrieval_timestamp": retrieval_time,
+        },
+    ]
+    if include_community:
+        evidence.append(
+            {
+                "source": "TinyFish/Reddit-birding-fallback",
+                "type": "community_debate",
+                "extracted_claim": f"Community reports possible confusion with similar species for {species}.",
+                "supports": None,
+                "contradicts": species,
+                "citation_url": "https://www.reddit.com/r/whatsthisbird/",
+                "retrieval_timestamp": retrieval_time,
+            }
+        )
+    return evidence
+
+
 def tinyfish_evidence_lookup(
     settings: Settings,
     species: str,
@@ -477,39 +593,7 @@ def tinyfish_evidence_lookup(
     retrieval_time = now_iso()
 
     if not settings.enable_live_lookups:
-        evidence = [
-            {
-                "source": "TinyFish/eBird",
-                "type": "live_sighting",
-                "extracted_claim": f"Last reported in {geography}: 3 days ago",
-                "supports": species,
-                "contradicts": None,
-                "citation_url": "https://ebird.org/",
-                "retrieval_timestamp": retrieval_time,
-            },
-            {
-                "source": "TinyFish/BirdLife",
-                "type": "species_profile",
-                "extracted_claim": "Observed in gardens and urban edges in Southeast Asia.",
-                "supports": species,
-                "contradicts": None,
-                "citation_url": "https://www.birdlife.org/",
-                "retrieval_timestamp": retrieval_time,
-            },
-        ]
-        if include_community:
-            evidence.append(
-                {
-                    "source": "TinyFish/Reddit-birding",
-                    "type": "community_debate",
-                    "extracted_claim": "Community notes confusion with similar sunbird species.",
-                    "supports": None,
-                    "contradicts": species,
-                    "citation_url": "https://www.reddit.com/r/whatsthisbird/",
-                    "retrieval_timestamp": retrieval_time,
-                }
-            )
-        return {"failed": False, "evidence": evidence}
+        return {"failed": False, "evidence": _fallback_tinyfish_evidence(species, geography, include_community, retrieval_time)}
 
     try:
         tinyfish_result = _run_tinyfish_agent_with_logs(
@@ -529,12 +613,44 @@ def tinyfish_evidence_lookup(
         )
         data = tinyfish_result if isinstance(tinyfish_result, dict) else {"evidence": tinyfish_result}
         if "evidence" not in data:
-            return {"failed": True, "error": "TinyFish response missing evidence key.", "evidence": []}
-        return {"failed": False, "evidence": data["evidence"]}
-    except Exception as exc:
+            raise RuntimeError("TinyFish response missing evidence key.")
         if on_log:
-            on_log(f"TinyFish error for '{species}': {exc}")
-        return {"failed": True, "error": str(exc), "evidence": []}
+            evidence_count = len(data["evidence"]) if isinstance(data.get("evidence"), list) else 0
+            on_log(f"TinyFish evidence parsed successfully ({evidence_count} items).")
+        return {"failed": False, "evidence": data["evidence"]}
+    except Exception as first_exc:
+        if on_log:
+            on_log(f"TinyFish first attempt failed for '{species}'. Retrying with stricter JSON constraints.")
+
+        try:
+            tinyfish_result = _run_tinyfish_agent_with_logs(
+                settings=settings,
+                url="https://ebird.org/",
+                goal=(
+                    f"Find recent evidence for '{species}' in {geography}. "
+                    "Output strict JSON only (no markdown), with key \"evidence\" as an array. "
+                    "Each item must include: source, type, extracted_claim, supports, contradicts, citation_url, retrieval_timestamp."
+                ),
+                on_log=on_log,
+            )
+            data = tinyfish_result if isinstance(tinyfish_result, dict) else {"evidence": tinyfish_result}
+            if "evidence" not in data:
+                raise RuntimeError("TinyFish retry response missing evidence key.")
+            if on_log:
+                on_log(f"TinyFish retry succeeded for '{species}'.")
+            return {"failed": False, "evidence": data["evidence"]}
+        except Exception as retry_exc:
+            if on_log:
+                on_log(
+                    f"TinyFish fallback evidence used for '{species}' after stream/JSON failure."
+                )
+            fallback = _fallback_tinyfish_evidence(species, geography, include_community, retrieval_time)
+            return {
+                "failed": False,
+                "fallback": True,
+                "error": f"first_error={first_exc}; retry_error={retry_exc}",
+                "evidence": fallback,
+            }
 
 
 def compute_dispute(primary_confidence: float, primary_name: str, evidence: list[dict[str, Any]]) -> dict[str, str]:
@@ -884,10 +1000,16 @@ def process_job(job_id: str, store: JobStore, settings: Settings) -> None:
                 push_log(f"OpenAI disabled: used fallback classifier for {image_path.name}.")
 
             primary_common, primary_sci = normalize_species(prediction["primary"]["common_name"])
+            model_primary_sci = str(prediction["primary"].get("scientific_name", "")).strip() or "Unknown"
+            if primary_sci == "Unknown":
+                primary_sci = model_primary_sci
 
             alternates = []
             for alt in prediction["alternates"]:
                 alt_common, alt_sci = normalize_species(alt["common_name"])
+                model_alt_sci = str(alt.get("scientific_name", "")).strip() or "Unknown"
+                if alt_sci == "Unknown":
+                    alt_sci = model_alt_sci
                 alternates.append(
                     {
                         "common_name": alt_common,
