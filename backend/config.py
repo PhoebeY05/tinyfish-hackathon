@@ -10,6 +10,8 @@ class Settings:
     port: int
     upload_dir: Path
     report_dir: Path
+    quiz_db_path: Path
+    rarity_leaderboard_db_path: Path
     enable_live_lookups: bool
     tinyfish_api_key: str
     tinyfish_base_url: str
@@ -32,6 +34,10 @@ def load_settings() -> Settings:
         port=int(os.getenv("PORT", "3000")),
         upload_dir=Path(os.getenv("UPLOAD_DIR", "data/uploads")).resolve(),
         report_dir=Path(os.getenv("REPORT_DIR", "data/reports")).resolve(),
+        quiz_db_path=Path(os.getenv("QUIZ_DB_PATH", "data/quiz/user_quiz_data.json")).resolve(),
+        rarity_leaderboard_db_path=Path(
+            os.getenv("RARITY_LEADERBOARD_DB_PATH", "data/leaderboard/rarity_leaderboard.json")
+        ).resolve(),
         enable_live_lookups=enable_live_lookups,
         tinyfish_api_key=os.getenv("TINYFISH_API_KEY", ""),
         tinyfish_base_url=os.getenv("TINYFISH_BASE_URL", "https://api.tinyfish.ai"),

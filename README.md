@@ -36,6 +36,39 @@ This repository now includes a Python backend base for a bird-photo upload and r
     - `index.html`
     - image previews
 
+- `POST /quiz/submissions`
+  - Stores a quiz submission in the local quiz database file
+  - Body:
+    - `userId` (string)
+    - `quizId` (string)
+    - `score` (number)
+    - `totalQuestions` (integer)
+    - `answers` (array, optional)
+    - `metadata` (object, optional)
+  - Returns created submission payload with generated `id`
+
+- `GET /quiz/submissions`
+  - Returns saved submissions
+  - Optional query params: `userId`, `quizId`, `limit` (1-200)
+
+- `GET /quiz/submissions/{id}`
+  - Returns one saved submission by id
+
+- `POST /leaderboard/rarity/submit`
+  - Scores a completed upload job and adds it to shared rarity leaderboard
+  - Body:
+    - `jobId` (completed upload job id)
+    - `participantId` (your user/team id)
+    - `displayName` (name shown on leaderboard)
+  - Returns leaderboard entry plus `rank`, `totalParticipants`, `percentile`
+
+- `GET /leaderboard/rarity`
+  - Returns global rarity leaderboard
+  - Optional query params: `limit` (1-500), `geography`
+
+- `GET /leaderboard/rarity/participants/{participantId}`
+  - Returns score history for one participant
+
 ## Run Locally
 
 ### Backend & Frontend (Production Build)
@@ -89,6 +122,8 @@ This proxies API requests to the backend and enables React hot module reloading.
 - `PORT` (default: `3000`)
 - `UPLOAD_DIR` (default: `data/uploads`)
 - `REPORT_DIR` (default: `data/reports`)
+- `QUIZ_DB_PATH` (default: `data/quiz/user_quiz_data.json`)
+- `RARITY_LEADERBOARD_DB_PATH` (default: `data/leaderboard/rarity_leaderboard.json`)
 - `ENABLE_LIVE_LOOKUPS` (`false` by default)
 - `TINYFISH_API_KEY` (required when `ENABLE_LIVE_LOOKUPS=true`)
 - `TINYFISH_BASE_URL` (optional, defaults to `https://api.tinyfish.ai`)
