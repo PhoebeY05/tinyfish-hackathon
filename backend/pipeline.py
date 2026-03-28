@@ -161,7 +161,7 @@ Only return valid JSON, no other text.""",
     except Exception as e:
         print(f"Error parsing OpenAI response: {e}")
         # Fallback to placeholder if parsing fails
-        return classify_image(image_path.name)
+        return _fallback_classify_image(image_path.name)
 
 
 def tinyfish_evidence_lookup(
