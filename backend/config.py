@@ -15,6 +15,7 @@ class Settings:
     enable_live_lookups: bool
     tinyfish_api_key: str
     tinyfish_base_url: str
+    tinyfish_default_search_url: str
     enable_openai_classification: bool
     openai_api_key: str
     openai_model: str
@@ -41,6 +42,7 @@ def load_settings() -> Settings:
         enable_live_lookups=enable_live_lookups,
         tinyfish_api_key=os.getenv("TINYFISH_API_KEY", ""),
         tinyfish_base_url=os.getenv("TINYFISH_BASE_URL", "https://api.tinyfish.ai"),
+        tinyfish_default_search_url=os.getenv("TINYFISH_DEFAULT_SEARCH_URL", "https://ebird.org/region/SG"),
         enable_openai_classification=enable_openai_classification,
         openai_api_key=os.getenv("OPENAI_API_KEY", ""),
         openai_model=os.getenv("OPENAI_MODEL", "gpt-4o"),

@@ -131,7 +131,7 @@ def job_download(job_id: str):
     if not zip_path or not Path(zip_path).exists():
         raise HTTPException(status_code=404, detail="Report zip not found")
 
-    return FileResponse(path=zip_path, filename=f"{job_id}-bird-report.zip", media_type="application/zip")
+    return FileResponse(path=zip_path, filename="report.zip", media_type="application/zip")
 
 
 @app.post("/quiz/submissions", status_code=201)

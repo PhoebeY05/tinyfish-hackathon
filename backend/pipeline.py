@@ -598,7 +598,7 @@ def tinyfish_evidence_lookup(
     try:
         tinyfish_result = _run_tinyfish_agent_with_logs(
             settings=settings,
-            url="https://ebird.org/",
+            url=settings.tinyfish_default_search_url,
             goal=(
                 f"Gather evidence for bird species '{species}' in {geography}. "
                 "Return JSON only with key 'evidence'. "
@@ -651,6 +651,105 @@ def tinyfish_evidence_lookup(
                 "error": f"first_error={first_exc}; retry_error={retry_exc}",
                 "evidence": fallback,
             }
+
+
+def tinyfish_species_profile_lookup(
+    settings: Settings,
+    species: str,
+    source_url: str | None = None,
+    on_log: Callable[[str], None] | None = None,
+) -> dict[str, Any]:
+    source_url = source_url or settings.tinyfish_default_search_url
+    if not settings.enable_live_lookups:
+        return {
+            "common_name": species,
+            "scientific_name": None,
+            "habitat": None,
+            "where_found_in_singapore": None,
+            "source_url": source_url,
+            "rarity": "unknown",
+            "lastest_sighting": None,
+        }
+
+    goal = f"""
+Find information about the bird species "{species}".
+
+Return JSON in exactly this structure:
+{{
+  "common_name": "string",
+  "scientific_name": "string or null",
+  "habitat": "string or null",
+  "where_found_in_singapore": "string or null",
+  "source_url": "string",
+  "rarity": "string",
+  "lastest_sighting": "string"
+}}
+
+Rules:
+- Use only information clearly shown on the page
+- If a field is not available, return null
+- Do not guess
+- Stop when all fields are collected
+- Do not search unnecessarily, once found information, move on
+- Search as efficiently as possible
+- Only use the provided url for searching
+- Search directly from 'Explore Regions'
+- Do not search from 'Explore Species'
+
+If extraction fails, return:
+{{
+  "success": false,
+  "error_type": "timeout or blocked or not_found",
+  "error_message": "string",
+  "partial_results": {{}}
+}}
+""".strip()
+
+    try:
+        result = _run_tinyfish_agent_with_logs(
+            settings=settings,
+            url=source_url,
+            goal=goal,
+            on_log=on_log,
+        )
+        if not isinstance(result, dict):
+            return {
+                "success": False,
+                "error_type": "not_found",
+                "error_message": "TinyFish returned non-object result.",
+                "partial_results": {},
+            }
+        if result.get("success") is False:
+            return {
+                "success": False,
+                "error_type": result.get("error_type", "not_found"),
+                "error_message": result.get("error_message", "Extraction failed."),
+                "partial_results": result.get("partial_results", {}),
+            }
+
+        return {
+            "common_name": result.get("common_name") or species,
+            "scientific_name": result.get("scientific_name"),
+            "habitat": result.get("habitat"),
+            "where_found_in_singapore": result.get("where_found_in_singapore"),
+            "source_url": result.get("source_url") or source_url,
+            "rarity": result.get("rarity"),
+            "lastest_sighting": result.get("lastest_sighting"),
+        }
+    except Exception as exc:
+        text = str(exc).lower()
+        if "timeout" in text:
+            error_type = "timeout"
+        elif "blocked" in text or "captcha" in text or "403" in text:
+            error_type = "blocked"
+        else:
+            error_type = "not_found"
+        return {
+            "success": False,
+            "error_type": error_type,
+            "error_message": str(exc),
+            "partial_results": {},
+        }
 
 
 def compute_dispute(primary_confidence: float, primary_name: str, evidence: list[dict[str, Any]]) -> dict[str, str]:
@@ -1188,6 +1287,7 @@ def process_job(job_id: str, store: JobStore, settings: Settings) -> None:
 
                 evidence_by_image_index: dict[int, list[dict[str, Any]]] = {}
                 provider_errors_by_image_index: dict[int, list[str]] = {}
+                species_profile_by_image_index: dict[int, dict[str, Any]] = {}
 
                 group_items = list(species_groups.values())
 
@@ -1209,14 +1309,23 @@ def process_job(job_id: str, store: JobStore, settings: Settings) -> None:
                         include_community=bool(group["include_community"]),
                         on_log=species_log,
                     )
+                    species_profile = tinyfish_species_profile_lookup(
+                        settings=settings,
+                        species=species_name,
+                        source_url=settings.tinyfish_default_search_url,
+                        on_log=species_log,
+                    )
                     group_errors: list[str] = []
                     if lookup.get("failed"):
                         group_errors.append(lookup.get("error", "TinyFish lookup failed"))
+                    if isinstance(species_profile, dict) and species_profile.get("success") is False:
+                        group_errors.append(species_profile.get("error_message", "TinyFish species profile lookup failed"))
 
                     return {
                         "species_name": species_name,
                         "group_indexes": group_indexes,
                         "group_evidence": lookup.get("evidence", []),
+                        "group_species_profile": species_profile,
                         "group_errors": group_errors,
                     }
 
@@ -1232,10 +1341,12 @@ def process_job(job_id: str, store: JobStore, settings: Settings) -> None:
                         result = future.result()
                         group_indexes = result["group_indexes"]
                         group_evidence = result["group_evidence"]
+                        group_species_profile = result["group_species_profile"]
                         group_errors = result["group_errors"]
 
                         for image_index in group_indexes:
                             evidence_by_image_index.setdefault(image_index, []).extend(group_evidence)
+                            species_profile_by_image_index[image_index] = group_species_profile
                             if group_errors:
                                 provider_errors_by_image_index.setdefault(image_index, []).extend(group_errors)
 
@@ -1260,6 +1371,7 @@ def process_job(job_id: str, store: JobStore, settings: Settings) -> None:
                                 if image_index in group_indexes:
                                     existing_evidence = image_copy.get("evidence", [])
                                     image_copy["evidence"] = [*existing_evidence, *group_evidence]
+                                    image_copy["species_profile"] = group_species_profile
 
                                     existing_errors = image_copy.get("provider_errors", [])
                                     image_copy["provider_errors"] = [*existing_errors, *group_errors]
@@ -1364,6 +1476,15 @@ def process_job(job_id: str, store: JobStore, settings: Settings) -> None:
                             },
                             "review_status": dispute["review_status"],
                             "provider_errors": provider_errors,
+                            "species_profile": species_profile_by_image_index.get(
+                                item["index"],
+                                {
+                                    "success": False,
+                                    "error_type": "not_found",
+                                    "error_message": "Species profile unavailable.",
+                                    "partial_results": {},
+                                },
+                            ),
                         }
                     )
 
