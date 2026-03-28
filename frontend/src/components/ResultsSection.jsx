@@ -2,17 +2,86 @@ import { useEffect, useState } from 'react';
 import ImageCard from './ImageCard';
 import ProgressBar from './ProgressBar';
 
-export default function ResultsSection({
-    jobId,
-    status,
-    results,
-    error,
-    onComplete,
-    onError,
-    onReset,
-}) {
+function getJobStorageKey(jobId) {
+    return `tinyfish:job:${jobId}`;
+}
+
+function readCachedJobState(jobId) {
+    if (!jobId || typeof window === 'undefined') {
+        return null;
+    }
+
+    try {
+        const raw = window.localStorage.getItem(getJobStorageKey(jobId));
+        if (!raw) {
+            return null;
+        }
+        return JSON.parse(raw);
+    } catch (err) {
+        console.warn('Failed to parse cached job state', err);
+        return null;
+    }
+}
+
+function writeCachedJobState(jobId, state) {
+    if (!jobId || typeof window === 'undefined') {
+        return;
+    }
+
+    try {
+        window.localStorage.setItem(getJobStorageKey(jobId), JSON.stringify(state));
+    } catch (err) {
+        console.warn('Failed to cache job state', err);
+    }
+}
+
+function clearCachedJobState(jobId) {
+    if (!jobId || typeof window === 'undefined') {
+        return;
+    }
+
+    try {
+        window.localStorage.removeItem(getJobStorageKey(jobId));
+    } catch (err) {
+        console.warn('Failed to clear cached job state', err);
+    }
+}
+
+export default function ResultsSection({ jobId, onReset }) {
     const [job, setJob] = useState(null);
+    const [status, setStatus] = useState('processing');
+    const [results, setResults] = useState(null);
+    const [error, setError] = useState(null);
     const [pollError, setPollError] = useState(null);
+
+    useEffect(() => {
+        const cached = readCachedJobState(jobId);
+        if (!cached) {
+            setJob(null);
+            setStatus('processing');
+            setResults(null);
+            setError(null);
+            setPollError(null);
+            return;
+        }
+
+        setJob(cached.job ?? null);
+        setStatus(cached.status ?? 'processing');
+        setResults(cached.results ?? null);
+        setError(cached.error ?? null);
+        setPollError(cached.pollError ?? null);
+    }, [jobId]);
+
+    useEffect(() => {
+        writeCachedJobState(jobId, {
+            job,
+            status,
+            results,
+            error,
+            pollError,
+            updatedAt: new Date().toISOString(),
+        });
+    }, [jobId, job, status, results, error, pollError]);
 
     useEffect(() => {
         if (!jobId || status === 'complete' || status === 'error') return;
@@ -29,10 +98,12 @@ export default function ResultsSection({
                     const resultsRes = await fetch(`/jobs/${jobId}/results`);
                     if (!resultsRes.ok) throw new Error('Failed to fetch results');
                     const resultsData = await resultsRes.json();
-                    onComplete(resultsData);
+                    setResults(resultsData);
+                    setStatus('complete');
                     clearInterval(pollInterval);
                 } else if (jobData.status === 'failed') {
-                    onError(jobData.error || 'Job failed');
+                    setError(jobData.error || 'Job failed');
+                    setStatus('error');
                     clearInterval(pollInterval);
                 }
             } catch (err) {
@@ -42,7 +113,12 @@ export default function ResultsSection({
         }, 1200);
 
         return () => clearInterval(pollInterval);
-    }, [jobId, status, onComplete, onError]);
+    }, [jobId, status]);
+
+    const handleResetClick = () => {
+        clearCachedJobState(jobId);
+        onReset();
+    };
 
     if (error) {
         return (
@@ -84,7 +160,7 @@ export default function ResultsSection({
                     </div>
                 )}
                 <button
-                    onClick={onReset}
+                    onClick={handleResetClick}
                     className="btn-primary"
                 >
                     Start Over
@@ -187,7 +263,7 @@ export default function ResultsSection({
 
                 {/* Reset Button */}
                 <button
-                    onClick={onReset}
+                    onClick={handleResetClick}
                     className="w-full px-6 py-3 font-mono text-sm border"
                     style={{
                         borderColor: 'var(--border)',
