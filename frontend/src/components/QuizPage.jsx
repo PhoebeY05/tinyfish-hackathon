@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 
-const QUIZ_SPECIES = [
+const QUIZ_LOCAL_FALLBACK = [
     { commonName: 'Asian Koel', wikipediaTitle: 'Asian_koel', aliases: ['asian koel', 'koel'] },
     {
         commonName: 'Collared Kingfisher',
@@ -80,7 +80,8 @@ function shuffle(items) {
 }
 
 async function fetchWikipediaImage(species) {
-    const endpoint = `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(species.wikipediaTitle)}`;
+    const wikipediaTitle = species.wikipediaTitle || species.commonName.replace(/\s+/g, '_');
+    const endpoint = `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(wikipediaTitle)}`;
 
     try {
         const response = await fetch(endpoint);
@@ -92,7 +93,7 @@ async function fetchWikipediaImage(species) {
         return {
             ...species,
             imageUrl: data.originalimage?.source || data.thumbnail?.source || null,
-            sourceUrl: data.content_urls?.desktop?.page || `https://en.wikipedia.org/wiki/${species.wikipediaTitle}`,
+            sourceUrl: data.content_urls?.desktop?.page || `https://en.wikipedia.org/wiki/${wikipediaTitle}`,
             sourceName: 'Wikipedia',
         };
     } catch (err) {
@@ -100,7 +101,7 @@ async function fetchWikipediaImage(species) {
         return {
             ...species,
             imageUrl: null,
-            sourceUrl: `https://en.wikipedia.org/wiki/${species.wikipediaTitle}`,
+            sourceUrl: `https://en.wikipedia.org/wiki/${wikipediaTitle}`,
             sourceName: 'Wikipedia',
         };
     }
@@ -113,6 +114,10 @@ export default function QuizPage() {
     const [secondsPerQuestion, setSecondsPerQuestion] = useState(20);
 
     const [questions, setQuestions] = useState([]);
+    const [speciesPool, setSpeciesPool] = useState(QUIZ_LOCAL_FALLBACK);
+    const [geography, setGeography] = useState('Global');
+    const [catalogSource, setCatalogSource] = useState('local');
+    const [catalogError, setCatalogError] = useState(null);
     const [loadingQuestions, setLoadingQuestions] = useState(false);
     const [questionIndex, setQuestionIndex] = useState(0);
     const [guess, setGuess] = useState('');
@@ -138,6 +143,31 @@ export default function QuizPage() {
         if (!questions.length) return 0;
         return Math.round((score / questions.length) * 100);
     }, [score, questions.length]);
+
+    const loadSpeciesCatalog = async (geo) => {
+        try {
+            const res = await fetch(`/api/quiz/species?geography=${encodeURIComponent(geo)}&limit=300`);
+            if (!res.ok) {
+                throw new Error(`Catalog fetch failed: ${res.status}`);
+            }
+
+            const data = await res.json();
+            const remoteSpecies = Array.isArray(data.species) && data.species.length > 0 ? data.species : QUIZ_LOCAL_FALLBACK;
+            setSpeciesPool(remoteSpecies);
+            setCatalogSource(data.source || 'tinyfish');
+            setCatalogError(data.error || null);
+            return remoteSpecies;
+        } catch (err) {
+            setSpeciesPool(QUIZ_LOCAL_FALLBACK);
+            setCatalogSource('local');
+            setCatalogError(err.message);
+            return QUIZ_LOCAL_FALLBACK;
+        }
+    };
+
+    useEffect(() => {
+        loadSpeciesCatalog(geography);
+    }, [geography]);
 
     useEffect(() => {
         if (!timedMode || phase !== 'playing' || answered) return undefined;
@@ -180,7 +210,8 @@ export default function QuizPage() {
         setLoadingQuestions(true);
         setPhase('setup');
 
-        const selected = shuffle(QUIZ_SPECIES).slice(0, questionCount);
+        const catalog = speciesPool.length > 0 ? speciesPool : await loadSpeciesCatalog(geography);
+        const selected = shuffle(catalog).slice(0, Math.min(questionCount, catalog.length));
         const withImages = await Promise.all(selected.map(fetchWikipediaImage));
 
         setQuestions(withImages);
@@ -197,7 +228,8 @@ export default function QuizPage() {
     const submitAnswer = () => {
         if (!currentQuestion || answered) return;
 
-        const correct = isCorrectAnswer(guess, [currentQuestion.commonName, ...currentQuestion.aliases]);
+        const aliases = Array.isArray(currentQuestion.aliases) ? currentQuestion.aliases : [];
+        const correct = isCorrectAnswer(guess, [currentQuestion.commonName, ...aliases]);
         setLastCorrect(correct);
         setAnswered(true);
 
@@ -246,6 +278,23 @@ export default function QuizPage() {
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-5 mb-6">
                     <label className="block">
+                        <span className="text-xs font-mono tracking-widest uppercase text-muted">Region</span>
+                        <select
+                            value={geography}
+                            onChange={(e) => setGeography(e.target.value)}
+                            className="mt-2 w-full px-4 py-2 border bg-card font-mono text-sm"
+                            style={{ borderColor: 'var(--border)' }}
+                        >
+                            <option value="Global">Global</option>
+                            <option value="Singapore">Singapore</option>
+                            <option value="Malaysia">Malaysia</option>
+                            <option value="Indonesia">Indonesia</option>
+                            <option value="Thailand">Thailand</option>
+                            <option value="Brunei">Brunei</option>
+                        </select>
+                    </label>
+
+                    <label className="block">
                         <span className="text-xs font-mono tracking-widest uppercase text-muted">Questions</span>
                         <select
                             value={questionCount}
@@ -271,6 +320,11 @@ export default function QuizPage() {
                             <option value="timed">Timed Challenge</option>
                         </select>
                     </label>
+                </div>
+
+                <div className="text-xs font-mono text-muted mb-6">
+                    Species pool: {speciesPool.length} birds · Source: {catalogSource}
+                    {catalogError ? ` · Fallback reason: ${catalogError}` : ''}
                 </div>
 
                 {timedMode && (

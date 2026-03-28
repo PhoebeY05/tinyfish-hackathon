@@ -5,14 +5,14 @@ from pathlib import Path
 from uuid import uuid4
 
 from dotenv import load_dotenv
-from fastapi import (BackgroundTasks, FastAPI, File, Form, HTTPException,
+from fastapi import (BackgroundTasks, FastAPI, File, Form, HTTPException, Query,
                      UploadFile)
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .config import load_settings
 from .job_store import JobStore
-from .pipeline import process_job
+from .pipeline import get_quiz_species_catalog, process_job
 
 # Ensure backend picks up .env values when started via uvicorn.
 load_dotenv()
@@ -24,6 +24,14 @@ settings.upload_dir.mkdir(parents=True, exist_ok=True)
 settings.report_dir.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(title="TinyFish Bird Report MVP")
+
+
+@app.get("/api/quiz/species")
+def quiz_species(
+    geography: str = Query("Global"),
+    limit: int = Query(250, ge=20, le=500),
+) -> dict[str, object]:
+    return get_quiz_species_catalog(settings=settings, geography=geography, limit=limit)
 
 
 @app.post("/uploads")

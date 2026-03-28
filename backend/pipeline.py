@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import random
 import shutil
 import zipfile
@@ -9,8 +10,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import requests
 from openai import OpenAI
+from tinyfish import TinyFish
 
 from .config import Settings
 from .job_store import JobStore
@@ -31,6 +32,90 @@ CANDIDATES = [
     ("Yellow-vented Bulbul", 0.49),
     ("Asian Koel", 0.44),
     ("Collared Kingfisher", 0.41),
+]
+
+QUIZ_FALLBACK_SPECIES = [
+    "Asian Koel",
+    "Collared Kingfisher",
+    "Olive-backed Sunbird",
+    "Yellow-vented Bulbul",
+    "Brahminy Kite",
+    "Black-naped Oriole",
+    "Javan Myna",
+    "White-throated Kingfisher",
+    "Scarlet-backed Flowerpecker",
+    "Eurasian Tree Sparrow",
+    "Blue-tailed Bee-eater",
+    "House Crow",
+    "Pink-necked Green Pigeon",
+    "Crimson Sunbird",
+    "Common Tailorbird",
+    "Pacific Swallow",
+    "Little Egret",
+    "Cattle Egret",
+    "Black-crowned Night Heron",
+    "White-breasted Waterhen",
+    "Common Myna",
+    "Barn Swallow",
+    "Oriental Magpie-Robin",
+    "Zebra Dove",
+    "Spotted Dove",
+    "Red Junglefowl",
+    "Long-tailed Shrike",
+    "Ashy Tailorbird",
+    "Grey Heron",
+    "Purple Heron",
+    "Striated Heron",
+    "Pied Fantail",
+    "Dollarbird",
+    "Rufous Woodpecker",
+    "Lineated Barbet",
+    "Coppersmith Barbet",
+    "Greater Coucal",
+    "Lesser Coucal",
+    "Black Baza",
+    "Changeable Hawk-Eagle",
+    "Crested Goshawk",
+    "Shikra",
+    "White-bellied Sea Eagle",
+    "Grey-headed Fish Eagle",
+    "Peregrine Falcon",
+    "Black-winged Kite",
+    "Eurasian Kestrel",
+    "Rose-ringed Parakeet",
+    "Blue-crowned Hanging Parrot",
+    "Red-breasted Parakeet",
+    "Chestnut Munia",
+    "Scaly-breasted Munia",
+    "White-rumped Munia",
+    "Baya Weaver",
+    "Common Iora",
+    "Yellow-browed Warbler",
+    "Arctic Warbler",
+    "Pallas's Grasshopper Warbler",
+    "Oriental Reed Warbler",
+    "Mugimaki Flycatcher",
+    "Asian Brown Flycatcher",
+    "Brown Shrike",
+    "Tiger Shrike",
+    "Black Drongo",
+    "Ashy Drongo",
+    "Greater Racket-tailed Drongo",
+    "Common Kingfisher",
+    "Stork-billed Kingfisher",
+    "Oriental Pied Hornbill",
+    "Black Hornbill",
+    "Crested Serpent Eagle",
+    "Indian Cuckoo",
+    "Plaintive Cuckoo",
+    "Savanna Nightjar",
+    "Large-tailed Nightjar",
+    "Little Tern",
+    "Whiskered Tern",
+    "Common Sandpiper",
+    "Wood Sandpiper",
+    "Pied Imperial Pigeon",
+    "Green Imperial Pigeon",
 ]
 
 
@@ -55,6 +140,174 @@ def _fallback_classify_image(image_name: str) -> dict[str, Any]:
         ],
         "model": "baseline-placeholder-v1",
     }
+
+
+def _normalize_quiz_species_item(item: Any) -> dict[str, Any] | None:
+    if isinstance(item, str):
+        common_name = item.strip()
+        if not common_name:
+            return None
+        return {
+            "commonName": common_name,
+            "aliases": [common_name, common_name.replace("-", " ")],
+        }
+
+    if isinstance(item, dict):
+        common_name = (
+            item.get("commonName")
+            or item.get("common_name")
+            or item.get("species")
+            or item.get("name")
+            or ""
+        ).strip()
+        if not common_name:
+            return None
+
+        aliases = item.get("aliases") if isinstance(item.get("aliases"), list) else []
+        aliases = [str(alias).strip() for alias in aliases if str(alias).strip()]
+        aliases.extend([common_name, common_name.replace("-", " ")])
+
+        result = {
+            "commonName": common_name,
+            "aliases": sorted(set(aliases), key=lambda name: name.lower()),
+        }
+
+        if item.get("wikipediaTitle"):
+            result["wikipediaTitle"] = item["wikipediaTitle"]
+
+        return result
+
+    return None
+
+
+def _extract_json_from_text(text: str) -> dict[str, Any] | list[Any] | None:
+    raw = text.strip()
+    if not raw:
+        return None
+
+    candidates = [raw]
+    if "```json" in raw:
+        candidates.append(raw.split("```json", 1)[1].split("```", 1)[0].strip())
+    if "```" in raw:
+        candidates.append(raw.split("```", 1)[1].split("```", 1)[0].strip())
+
+    for candidate in candidates:
+        try:
+            return json.loads(candidate)
+        except Exception:
+            continue
+    return None
+
+
+def _extract_json_from_tinyfish_event(event: Any) -> dict[str, Any] | list[Any] | None:
+    if isinstance(event, dict):
+        for key in ("output", "text", "content", "data", "message", "delta"):
+            value = event.get(key)
+            if isinstance(value, (dict, list)):
+                return value
+            if isinstance(value, str):
+                parsed = _extract_json_from_text(value)
+                if parsed is not None:
+                    return parsed
+
+    if isinstance(event, str):
+        return _extract_json_from_text(event)
+
+    parsed = _extract_json_from_text(str(event))
+    return parsed
+
+
+def _build_tinyfish_client(settings: Settings) -> TinyFish:
+    if settings.tinyfish_api_key:
+        os.environ.setdefault("TINYFISH_API_KEY", settings.tinyfish_api_key)
+
+    try:
+        return TinyFish(api_key=settings.tinyfish_api_key)
+    except TypeError:
+        return TinyFish()
+
+
+def _run_tinyfish_agent(settings: Settings, url: str, goal: str) -> dict[str, Any] | list[Any]:
+    client = _build_tinyfish_client(settings)
+    stream_chunks: list[str] = []
+
+    with client.agent.stream(url=url, goal=goal) as stream:
+        for event in stream:
+            parsed = _extract_json_from_tinyfish_event(event)
+            if isinstance(parsed, (dict, list)):
+                return parsed
+            stream_chunks.append(str(event))
+
+    parsed = _extract_json_from_text("\n".join(stream_chunks))
+    if isinstance(parsed, (dict, list)):
+        return parsed
+
+    raise RuntimeError("TinyFish stream completed without valid JSON output.")
+
+
+def get_quiz_species_catalog(settings: Settings, geography: str, limit: int = 250) -> dict[str, Any]:
+    fallback_species = [
+        {"commonName": name, "aliases": [name, name.replace("-", " ")]} for name in QUIZ_FALLBACK_SPECIES[:limit]
+    ]
+
+    if not settings.enable_live_lookups:
+        return {
+            "species": fallback_species,
+            "source": "fallback",
+            "live": False,
+            "count": len(fallback_species),
+        }
+
+    try:
+        tinyfish_result = _run_tinyfish_agent(
+            settings=settings,
+            url="https://en.wikipedia.org/wiki/List_of_birds_by_common_name",
+            goal=(
+                f"Create a quiz species pool for {geography}. "
+                f"Return JSON only with key 'species' as an array up to {limit} items. "
+                "Each item must be an object with commonName and optional aliases array."
+            ),
+        )
+        data = tinyfish_result if isinstance(tinyfish_result, dict) else {"species": tinyfish_result}
+
+        raw_species = data.get("species") or data.get("birds") or data.get("items") or []
+        normalized: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in raw_species:
+            parsed = _normalize_quiz_species_item(item)
+            if not parsed:
+                continue
+            key = parsed["commonName"].lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            normalized.append(parsed)
+            if len(normalized) >= limit:
+                break
+
+        if len(normalized) < 20:
+            return {
+                "species": fallback_species,
+                "source": "fallback",
+                "live": False,
+                "count": len(fallback_species),
+                "error": "TinyFish returned too few species for quiz pool.",
+            }
+
+        return {
+            "species": normalized,
+            "source": "tinyfish",
+            "live": True,
+            "count": len(normalized),
+        }
+    except Exception as exc:
+        return {
+            "species": fallback_species,
+            "source": "fallback",
+            "live": False,
+            "count": len(fallback_species),
+            "error": str(exc),
+        }
 
 
 def classify_image_with_openai(image_path: Path, settings: Settings) -> dict[str, Any]:
@@ -207,30 +460,22 @@ def tinyfish_evidence_lookup(
             )
         return {"failed": False, "evidence": evidence}
 
-    payload = {
-        "workflow": "bird-evidence-v1",
-        "input": {
-            "species": species,
-            "geography": geography,
-            "instructions": [
-                f"Check eBird for most recent reports of {species} in {geography}.",
-                "Extract field marks, habitat, and similar species from trusted bird references.",
-                "Inspect birding community discussion only when ambiguity is high."
-                if include_community
-                else "Skip community sources unless ambiguity threshold is reached.",
-            ],
-        },
-    }
-
     try:
-        response = requests.post(
-            f"{settings.tinyfish_base_url.rstrip('/')}/v1/agents/run",
-            json=payload,
-            headers={"Authorization": f"Bearer {settings.tinyfish_api_key}"},
-            timeout=20,
+        tinyfish_result = _run_tinyfish_agent(
+            settings=settings,
+            url="https://ebird.org/",
+            goal=(
+                f"Gather evidence for bird species '{species}' in {geography}. "
+                "Return JSON only with key 'evidence'. "
+                "Each evidence item should include source, type, extracted_claim, supports, contradicts, citation_url, retrieval_timestamp. "
+                + (
+                    "Include community/reddit signals only when ambiguity is high."
+                    if include_community
+                    else "Do not include community/reddit sources unless necessary."
+                )
+            ),
         )
-        response.raise_for_status()
-        data = response.json()
+        data = tinyfish_result if isinstance(tinyfish_result, dict) else {"evidence": tinyfish_result}
         if "evidence" not in data:
             return {"failed": True, "error": "TinyFish response missing evidence key.", "evidence": []}
         return {"failed": False, "evidence": data["evidence"]}
