@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 import psycopg2
@@ -11,22 +12,42 @@ from fastapi import (BackgroundTasks, FastAPI, File, Form, HTTPException,
                      Query, UploadFile)
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
 from .config import load_settings
 from .job_store import JobStore
-from .pipeline import get_quiz_species_catalog, process_job
+from .pipeline import process_job
+from .quiz_store import QuizStore
+from .rarity_leaderboard import RarityLeaderboardStore
 
 # Ensure backend picks up .env values when started via uvicorn.
 load_dotenv()
 
 settings = load_settings()
 store = JobStore()
+quiz_store = QuizStore(settings.quiz_db_path)
+rarity_store = RarityLeaderboardStore(settings.rarity_leaderboard_db_path)
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
 settings.upload_dir.mkdir(parents=True, exist_ok=True)
 settings.report_dir.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(title="TinyFish Bird Report MVP")
+
+
+class QuizSubmissionCreate(BaseModel):
+    userId: str = Field(min_length=1, max_length=128)
+    quizId: str = Field(min_length=1, max_length=128)
+    score: float
+    totalQuestions: int = Field(ge=0)
+    answers: list[dict[str, Any]] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class RarityLeaderboardSubmit(BaseModel):
+    jobId: str = Field(min_length=1, max_length=128)
+    participantId: str = Field(min_length=1, max_length=128)
+    displayName: str = Field(min_length=1, max_length=128)
 
 
 @app.on_event("startup")
@@ -118,6 +139,82 @@ def job_download(job_id: str):
         raise HTTPException(status_code=404, detail="Report zip not found")
 
     return FileResponse(path=zip_path, filename=f"{job_id}-bird-report.zip", media_type="application/zip")
+
+
+@app.post("/quiz/submissions", status_code=201)
+def create_quiz_submission(payload: QuizSubmissionCreate) -> dict[str, Any]:
+    submission = quiz_store.create_submission(
+        user_id=payload.userId,
+        quiz_id=payload.quizId,
+        score=payload.score,
+        total_questions=payload.totalQuestions,
+        answers=payload.answers,
+        metadata=payload.metadata,
+    )
+    return {"submission": submission}
+
+
+@app.get("/quiz/submissions")
+def list_quiz_submissions(
+    userId: str | None = None,
+    quizId: str | None = None,
+    limit: int = 50,
+) -> dict[str, list[dict[str, Any]]]:
+    if limit < 1 or limit > 200:
+        raise HTTPException(status_code=400, detail="limit must be between 1 and 200")
+
+    submissions = quiz_store.list_submissions(
+        user_id=userId,
+        quiz_id=quizId,
+        limit=limit,
+    )
+    return {"submissions": submissions}
+
+
+@app.get("/quiz/submissions/{submission_id}")
+def get_quiz_submission(submission_id: str) -> dict[str, Any]:
+    submission = quiz_store.get_submission(submission_id)
+    if not submission:
+        raise HTTPException(status_code=404, detail="Quiz submission not found")
+    return {"submission": submission}
+
+
+@app.post("/leaderboard/rarity/submit", status_code=201)
+def submit_rarity_score(payload: RarityLeaderboardSubmit) -> dict[str, Any]:
+    job = store.get_job(payload.jobId)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.status != "completed":
+        raise HTTPException(status_code=409, detail="Job is not completed yet")
+    if not job.results:
+        raise HTTPException(status_code=409, detail="Completed job has no report results")
+
+    ranking = rarity_store.submit_job_score(
+        participant_id=payload.participantId,
+        display_name=payload.displayName,
+        job_id=payload.jobId,
+        report=job.results,
+    )
+    return ranking
+
+
+@app.get("/leaderboard/rarity")
+def get_rarity_leaderboard(
+    limit: int = 50,
+    geography: str | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    if limit < 1 or limit > 500:
+        raise HTTPException(status_code=400, detail="limit must be between 1 and 500")
+    entries = rarity_store.get_leaderboard(limit=limit, geography=geography)
+    return {"entries": entries}
+
+
+@app.get("/leaderboard/rarity/participants/{participant_id}")
+def get_participant_history(participant_id: str, limit: int = 20) -> dict[str, list[dict[str, Any]]]:
+    if limit < 1 or limit > 200:
+        raise HTTPException(status_code=400, detail="limit must be between 1 and 200")
+    entries = rarity_store.get_participant_history(participant_id=participant_id, limit=limit)
+    return {"entries": entries}
 
 
 # Serve React build output from frontend/dist after all API routes
