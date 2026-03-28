@@ -2,7 +2,7 @@ import { useState } from 'react';
 import DisputeBadge from './DisputeBadge';
 import EvidencePanel from './EvidencePanel';
 
-export default function ImageCard({ image, tinyfishLogs = [], jobId }) {
+export default function ImageCard({ image, tinyfishLogs = [], isSpeciesLive = false, jobId }) {
     const [expandEvidence, setExpandEvidence] = useState(false);
 
     const primary = image.primary_prediction;
@@ -125,18 +125,35 @@ export default function ImageCard({ image, tinyfishLogs = [], jobId }) {
                 {/* Evidence Toggle */}
                 <button
                     onClick={() => setExpandEvidence(!expandEvidence)}
-                    className="w-full text-left px-3 py-2 font-mono text-xs tracking-widest uppercase transition border"
+                    className="w-full text-left px-3 py-2 font-mono text-xs tracking-widest uppercase transition border flex items-center justify-between"
                     style={{
                         borderColor: expandEvidence ? 'var(--accent)' : 'var(--border)',
                         backgroundColor: expandEvidence ? '#f9fdf7' : 'var(--card)',
                         color: expandEvidence ? 'var(--accent)' : 'var(--ink)',
                     }}
                 >
-                    {expandEvidence ? '▼' : '▶'} Evidence ({image.evidence?.length || 0})
+                    <span>{expandEvidence ? '▼' : '▶'} Evidence ({image.evidence?.length || 0})</span>
+                    {isSpeciesLive && (
+                        <span className="flex items-center gap-1 ml-2" style={{ animation: 'pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite' }}>
+                            <span
+                                className="inline-block w-2 h-2 rounded-full"
+                                style={{ backgroundColor: 'var(--accent2)' }}
+                            />
+                            <span style={{ fontSize: '0.65rem' }}>Live</span>
+                        </span>
+                    )}
                 </button>
+                <style>{`
+                    @keyframes pulse {
+                        0%, 100% { opacity: 1; }
+                        50% { opacity: 0.5; }
+                    }
+                `}</style>
 
                 {/* Evidence Panel */}
-                {expandEvidence && <EvidencePanel evidence={image.evidence || []} tinyfishLogs={tinyfishLogs} />}
+                {expandEvidence && (
+                    <EvidencePanel evidence={image.evidence || []} tinyfishLogs={tinyfishLogs} isLive={isSpeciesLive} />
+                )}
 
                 {/* Dispute Box */}
                 {dispute.status !== 'no_dispute' && (

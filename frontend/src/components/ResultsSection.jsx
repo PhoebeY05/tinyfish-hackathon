@@ -194,10 +194,15 @@ export default function ResultsSection({ jobId, onReset }) {
 
     if (status === 'complete' && results) {
         const totalImages = results.images?.length || 0;
-        const identifiedCount = results.images?.filter((img) => img.predictions?.length > 0).length || 0;
-        const disputesCount = results.images?.filter((img) => img.dispute?.status && img.dispute.status !== 'no_dispute').length || 0;
+        const identifiedCount = results.images?.filter((img) => {
+            const name = img.primary_prediction?.common_name || '';
+            return name.trim().length > 0 && name.toLowerCase() !== 'unknown';
+        }).length || 0;
+        const disputesCount = results.images?.filter(
+            (img) => img.confidence_dispute?.status && img.confidence_dispute.status !== 'no_dispute'
+        ).length || 0;
         const avgConfidence = results.images?.length
-            ? Math.round((results.images.reduce((sum, img) => sum + (img.predictions?.[0]?.confidence || 0), 0) / results.images.length) * 100)
+            ? Math.round((results.images.reduce((sum, img) => sum + (img.primary_prediction?.confidence || 0), 0) / results.images.length) * 100)
             : 0;
         const evidenceInBackground = Boolean(job?.progress?.evidence_background_running);
         const evidenceDone = Boolean(job?.progress?.evidence_completed);
@@ -209,23 +214,22 @@ export default function ResultsSection({ jobId, onReset }) {
             : [];
 
         const speciesLogMap = {};
-        let activeSpeciesKey = null;
+        const speciesLiveStateMap = {};
         tinyfishLogs.forEach((line) => {
-            const groupMatch = line.match(/\(([^,]+),\s*\d+\s*images\)/i);
-            if (groupMatch?.[1]) {
-                activeSpeciesKey = groupMatch[1].trim().toLowerCase();
-                if (!speciesLogMap[activeSpeciesKey]) {
-                    speciesLogMap[activeSpeciesKey] = [];
+            const taggedMatch = line.match(/TinyFish\[([^\]]+)\]/i);
+            if (taggedMatch?.[1]) {
+                const speciesKey = taggedMatch[1].trim().toLowerCase();
+                if (!speciesLogMap[speciesKey]) {
+                    speciesLogMap[speciesKey] = [];
                 }
-                speciesLogMap[activeSpeciesKey].push(line);
-                return;
-            }
+                speciesLogMap[speciesKey].push(line);
 
-            if (activeSpeciesKey) {
-                if (!speciesLogMap[activeSpeciesKey]) {
-                    speciesLogMap[activeSpeciesKey] = [];
+                if (line.includes('collecting evidence for species group')) {
+                    speciesLiveStateMap[speciesKey] = true;
                 }
-                speciesLogMap[activeSpeciesKey].push(line);
+                if (line.includes('evidence completed')) {
+                    speciesLiveStateMap[speciesKey] = false;
+                }
             }
         });
 
@@ -311,8 +315,15 @@ export default function ResultsSection({ jobId, onReset }) {
                     {results.images?.map((image) => {
                         const speciesKey = (image.primary_prediction?.common_name || '').trim().toLowerCase();
                         const scopedLogs = speciesLogMap[speciesKey] || [];
+                        const isSpeciesLive = Boolean(speciesLiveStateMap[speciesKey]);
                         return (
-                            <ImageCard key={image.image_id} image={image} tinyfishLogs={scopedLogs} jobId={jobId} />
+                            <ImageCard
+                                key={image.image_id}
+                                image={image}
+                                tinyfishLogs={scopedLogs}
+                                isSpeciesLive={isSpeciesLive}
+                                jobId={jobId}
+                            />
                         );
                     })}
                 </div>

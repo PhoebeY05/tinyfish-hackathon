@@ -1,4 +1,4 @@
-export default function EvidencePanel({ evidence, tinyfishLogs = [] }) {
+export default function EvidencePanel({ evidence, tinyfishLogs = [], isLive = false }) {
     return (
         <div className="space-y-2 mt-3">
             {tinyfishLogs.length > 0 ? (
