@@ -40,7 +40,7 @@ def normalize_species(common_name: str) -> tuple[str, str]:
     return CANONICAL_TAXONOMY.get(common_name.lower(), (common_name, "Unknown"))
 
 
-def classify_image(image_name: str) -> dict[str, Any]:
+def _fallback_classify_image(image_name: str) -> dict[str, Any]:
     seed = sum(ord(ch) for ch in image_name.lower())
     random.seed(seed)
     start = random.randint(0, len(CANDIDATES) - 1)
@@ -53,6 +53,60 @@ def classify_image(image_name: str) -> dict[str, Any]:
         ],
         "model": "baseline-placeholder-v1",
     }
+
+
+def classify_image(settings: Settings, image_path: Path) -> dict[str, Any]:
+    if not settings.enable_live_lookups:
+        return _fallback_classify_image(image_path.name)
+
+    try:
+        with image_path.open("rb") as image_file:
+            files = {"image": (image_path.name, image_file, "application/octet-stream")}
+            payload = {
+                "workflow": "bird-classification-v1",
+                "input": {
+                    "image_name": image_path.name,
+                    "instructions": [
+                        "Identify the bird species in this photo.",
+                        "Return the top 3 candidate species with confidence scores.",
+                    ],
+                },
+            }
+
+            response = requests.post(
+                f"{settings.tinyfish_base_url.rstrip('/')}/v1/agents/run",
+                data={"input": json.dumps(payload["input"])},
+                files=files,
+                headers={"Authorization": f"Bearer {settings.tinyfish_api_key}"},
+                timeout=30,
+            )
+            response.raise_for_status()
+            data = response.json()
+
+        raw_predictions = data.get("predictions") or data.get("results") or []
+        if not isinstance(raw_predictions, list) or len(raw_predictions) == 0:
+            raise ValueError("TinyFish classification response missing predictions")
+
+        candidates: list[dict[str, Any]] = []
+        for item in raw_predictions[:3]:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("common_name") or item.get("label") or item.get("species")
+            confidence = float(item.get("confidence", 0.0) or 0.0)
+            if not name:
+                continue
+            candidates.append({"common_name": name, "confidence": round(confidence, 2)})
+
+        if len(candidates) < 3:
+            return _fallback_classify_image(image_path.name)
+
+        return {
+            "primary": candidates[0],
+            "alternates": candidates[1:3],
+            "model": "tinyfish-classifier-v1",
+        }
+    except Exception:
+        return _fallback_classify_image(image_path.name)
 
 
 def tinyfish_evidence_lookup(
@@ -279,7 +333,7 @@ def process_job(job_id: str, store: JobStore, settings: Settings) -> None:
         image_reports: list[dict[str, Any]] = []
 
         for index, image_path in enumerate(images, start=1):
-            prediction = classify_image(image_path.name)
+            prediction = classify_image(settings, image_path)
             primary_common = prediction["primary"]["common_name"]
             primary_common, primary_sci = normalize_species(primary_common)
 
