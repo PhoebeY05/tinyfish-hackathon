@@ -4,6 +4,7 @@ import shutil
 from pathlib import Path
 from uuid import uuid4
 
+from dotenv import load_dotenv
 from fastapi import (BackgroundTasks, FastAPI, File, Form, HTTPException,
                      UploadFile)
 from fastapi.responses import FileResponse
@@ -12,6 +13,9 @@ from fastapi.staticfiles import StaticFiles
 from .config import load_settings
 from .job_store import JobStore
 from .pipeline import process_job
+
+# Ensure backend picks up .env values when started via uvicorn.
+load_dotenv()
 
 settings = load_settings()
 store = JobStore()

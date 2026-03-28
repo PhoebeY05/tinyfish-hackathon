@@ -392,7 +392,7 @@ def process_job(job_id: str, store: JobStore, settings: Settings) -> None:
             if settings.enable_openai_classification:
                 prediction = classify_image_with_openai(image_path, settings)
             else:
-                    prediction = _fallback_classify_image(image_path.name)
+                prediction = _fallback_classify_image(image_path.name)
             
             primary_common = prediction["primary"]["common_name"]
             primary_common, primary_sci = normalize_species(primary_common)
