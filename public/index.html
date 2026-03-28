@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TinyFish Bird Report</title>
+    <style>
+      :root {
+        --ink: #1f2937;
+        --paper: #f6f7f9;
+        --card: #ffffff;
+        --primary: #0f766e;
+        --accent: #d97706;
+        --ok: #166534;
+        --warn: #9a3412;
+        --bad: #991b1b;
+      }
+
+      * { box-sizing: border-box; }
+
+      body {
+        margin: 0;
+        background: radial-gradient(circle at 20% 0%, #d1fae5, transparent 45%),
+          radial-gradient(circle at 80% 10%, #ffedd5, transparent 40%),
+          var(--paper);
+        color: var(--ink);
+        font-family: "Avenir Next", "Segoe UI", sans-serif;
+      }
+
+      .wrap {
+        max-width: 1080px;
+        margin: 28px auto;
+        padding: 0 16px 40px;
+      }
+
+      .hero {
+        background: linear-gradient(135deg, #0f766e, #115e59);
+        color: #fff;
+        border-radius: 18px;
+        padding: 24px;
+        box-shadow: 0 20px 40px rgba(15, 118, 110, 0.2);
+      }
+
+      h1 { margin: 0 0 8px; font-size: 1.8rem; }
+      p { margin: 0; line-height: 1.5; }
+
+      .panel {
+        background: var(--card);
+        margin-top: 18px;
+        border-radius: 14px;
+        padding: 16px;
+        border: 1px solid #e5e7eb;
+      }
+
+      .row {
+        display: grid;
+        grid-template-columns: 1fr 220px auto;
+        gap: 10px;
+        align-items: end;
+      }
+
+      input, select, button {
+        font: inherit;
+        border-radius: 10px;
+        border: 1px solid #d1d5db;
+        padding: 10px 12px;
+        width: 100%;
+      }
+
+      button {
+        background: var(--primary);
+        border-color: var(--primary);
+        color: #fff;
+        cursor: pointer;
+        width: auto;
+      }
+
+      button:disabled { opacity: 0.6; cursor: not-allowed; }
+
+      .status { margin-top: 12px; font-weight: 600; }
+      .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; margin-top: 12px; }
+      .card { border: 1px solid #e5e7eb; border-radius: 12px; padding: 12px; background: #fff; }
+      .meta { color: #4b5563; font-size: 0.93rem; }
+
+      .badge {
+        display: inline-block;
+        padding: 3px 8px;
+        border-radius: 999px;
+        font-size: 0.78rem;
+        font-weight: 700;
+      }
+
+      .no_dispute { background: #dcfce7; color: var(--ok); }
+      .minor_disagreement { background: #ffedd5; color: var(--warn); }
+      .major_disagreement { background: #fee2e2; color: var(--bad); }
+
+      @media (max-width: 760px) {
+        .row { grid-template-columns: 1fr; }
+        button { width: 100%; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <section class="hero">
+        <h1>TinyFish Bird Report Builder</h1>
+        <p>Upload a zip of bird photos. The backend classifies species, runs TinyFish evidence lookups, and generates a cited report bundle.</p>
+      </section>
+
+      <section class="panel">
+        <div class="row">
+          <div>
+            <label for="photosZip">Bird Photos Zip</label>
+            <input id="photosZip" type="file" accept=".zip" />
+          </div>
+          <div>
+            <label for="geography">Geography</label>
+            <select id="geography">
+              <option>Singapore</option>
+              <option>Malaysia</option>
+              <option>Indonesia</option>
+              <option>Thailand</option>
+            </select>
+          </div>
+          <button id="uploadBtn">Upload and Analyze</button>
+        </div>
+        <div id="status" class="status"></div>
+      </section>
+
+      <section class="panel">
+        <h2>Per-image Results</h2>
+        <div id="results" class="grid"></div>
+        <p id="download"></p>
+      </section>
+    </div>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
