@@ -11,9 +11,9 @@ This repository now includes a Python backend base for a bird-photo upload and r
 
 ## What This MVP Base Includes
 
-- Frontend upload/results app in `public/`
-- Backend API in `backend/app.py`
-- Background job pipeline in `backend/pipeline.py`
+- React + Tailwind responsive frontend in `frontend/`
+- FastAPI backend with TinyFish orchestration in `backend/`
+- Background job pipeline for evidence collection in `backend/pipeline.py`
 - Report artifact generation in `data/reports/`
 
 ## API Endpoints
@@ -38,12 +38,23 @@ This repository now includes a Python backend base for a bird-photo upload and r
 
 ## Run Locally
 
+### Backend & Frontend (Production Build)
+
 1. Install Python dependencies
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+```
+
+1. Install and build React frontend
+
+```bash
+cd frontend
+npm install
+npm run build
+cd ..
 ```
 
 1. Configure environment
@@ -55,12 +66,23 @@ cp .env.example .env
 1. Start server
 
 ```bash
-uvicorn backend.app:app --reload --host 0.0.0.0 --port 3000
+uvicorn backend.app:app --host 0.0.0.0 --port 3000
 ```
 
 1. Open app
 
 `http://localhost:3000`
+
+### Frontend Development (with Hot Reload)
+
+In a separate terminal, run the Vite dev server while backend runs on port 3000:
+
+```bash
+cd frontend
+npm run dev
+```
+
+This proxies API requests to the backend and enables React hot module reloading.
 
 ## Environment
 
@@ -100,10 +122,33 @@ backend/
   config.py
   job_store.py
   pipeline.py
-public/
+frontend/
+  src/
+    components/
+      DisputeBadge.jsx
+      EvidencePanel.jsx
+      Hero.jsx
+      ImageCard.jsx
+      ProgressBar.jsx
+      ResultsSection.jsx
+      UploadSection.jsx
+    App.jsx
+    index.css
+    main.jsx
   index.html
-  app.js
+  package.json
+  tailwind.config.js
+  vite.config.js
 data/
   uploads/
   reports/
+requirements.txt
 ```
+
+## Frontend Features
+
+- **Responsive Design**: Mobile-first with Tailwind CSS breakpoints (sm, md, lg)
+- **Real-time Progress**: Polls backend job status and displays live progress bar
+- **Evidence Panel**: Expandable accordion showing all sources and citations
+- **Dispute Visualization**: Color-coded badges for no_dispute, minor_disagreement, major_disagreement
+- **Download Integration**: Direct download link for report ZIP bundle per job

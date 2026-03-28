@@ -4,7 +4,8 @@ import shutil
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import (BackgroundTasks, FastAPI, File, Form, HTTPException,
+                     UploadFile)
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -89,6 +90,8 @@ def job_download(job_id: str):
     return FileResponse(path=zip_path, filename=f"{job_id}-bird-report.zip", media_type="application/zip")
 
 
-public_dir = Path("public").resolve()
-if public_dir.exists():
-    app.mount("/", StaticFiles(directory=str(public_dir), html=True), name="public")
+# Serve React build output from frontend/dist after all API routes
+# This allows API routes to take precedence and SPA fallback for unmatched routes
+build_dir = Path("frontend/dist").resolve()
+if build_dir.exists():
+    app.mount("/", StaticFiles(directory=str(build_dir), html=True), name="frontend")

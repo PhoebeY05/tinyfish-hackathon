@@ -1,0 +1,68 @@
+export default function EvidencePanel({ evidence }) {
+    return (
+        <div className="space-y-2 mt-3">
+            {evidence.map((item, idx) => (
+                <div
+                    key={idx}
+                    className="p-3 border text-sm"
+                    style={{
+                        borderColor: 'var(--border)',
+                        borderWidth: '1px',
+                        backgroundColor: 'var(--card)',
+                    }}
+                >
+                    <div className="flex items-start justify-between gap-2 mb-2">
+                        <p className="font-mono text-xs font-bold uppercase" style={{ color: 'var(--accent)' }}>
+                            {item.source}
+                        </p>
+                        <div className="flex gap-1">
+                            {item.supports && (
+                                <span
+                                    className="text-xs px-2 py-0.5 font-mono uppercase tracking-widest border"
+                                    style={{
+                                        backgroundColor: 'var(--success)',
+                                        color: 'var(--card)',
+                                        borderColor: 'var(--success)',
+                                        borderWidth: '1px',
+                                    }}
+                                >
+                                    ✓ Supports
+                                </span>
+                            )}
+                            {item.contradicts && (
+                                <span
+                                    className="text-xs px-2 py-0.5 font-mono uppercase tracking-widest border"
+                                    style={{
+                                        backgroundColor: 'var(--danger)',
+                                        color: 'var(--card)',
+                                        borderColor: 'var(--danger)',
+                                        borderWidth: '1px',
+                                    }}
+                                >
+                                    ✕ Contradicts
+                                </span>
+                            )}
+                        </div>
+                    </div>
+                    <p className="text-xs font-mono mb-1" style={{ color: 'var(--muted)' }}>
+                        {item.type}
+                    </p>
+                    <p className="text-sm mb-2" style={{ color: 'var(--ink)' }}>
+                        {item.extracted_claim}
+                    </p>
+                    {item.citation_url && (
+                        <a
+                            href={item.citation_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-xs font-mono uppercase tracking-widest inline-block"
+                            style={{ color: 'var(--accent)' }}
+                        >
+                            View Citation ↗
+                        </a>
+                    )}
+                </div>
+            ))}
+        </div>
+    );
+}
