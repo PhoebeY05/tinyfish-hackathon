@@ -242,31 +242,22 @@ def _run_tinyfish_agent_with_logs(
     client = _build_tinyfish_client(settings)
     stream_chunks: list[str] = []
 
-    if on_log:
-        on_log(f"TinyFish: started agent call for {url}")
-
     with client.agent.stream(url=url, goal=goal) as stream:
         for event in stream:
             parsed = _extract_json_from_tinyfish_event(event)
             if isinstance(parsed, (dict, list)):
-                if on_log:
-                    on_log("TinyFish: received structured response.")
                 return parsed
 
             event_text = str(event).strip()
             if event_text:
                 stream_chunks.append(event_text)
-                if on_log:
-                    on_log(f"TinyFish stream: {event_text[:180]}")
+                if on_log and "EventType.PROGRESS" in event_text:
+                    on_log(f"TinyFish progress: {event_text[:180]}")
 
     parsed = _extract_json_from_text("\n".join(stream_chunks))
     if isinstance(parsed, (dict, list)):
-        if on_log:
-            on_log("TinyFish: parsed JSON from stream output.")
         return parsed
 
-    if on_log:
-        on_log("TinyFish: stream ended without valid JSON output.")
     raise RuntimeError("TinyFish stream completed without valid JSON output.")
 
 
@@ -451,9 +442,6 @@ def tinyfish_evidence_lookup(
 ) -> dict[str, Any]:
     retrieval_time = now_iso()
 
-    if on_log:
-        on_log(f"TinyFish: collecting evidence for '{species}' in {geography}.")
-
     if not settings.enable_live_lookups:
         evidence = [
             {
@@ -507,11 +495,7 @@ def tinyfish_evidence_lookup(
         )
         data = tinyfish_result if isinstance(tinyfish_result, dict) else {"evidence": tinyfish_result}
         if "evidence" not in data:
-            if on_log:
-                on_log("TinyFish: response missing evidence key.")
             return {"failed": True, "error": "TinyFish response missing evidence key.", "evidence": []}
-        if on_log:
-            on_log(f"TinyFish: collected {len(data['evidence'])} evidence items for '{species}'.")
         return {"failed": False, "evidence": data["evidence"]}
     except Exception as exc:
         if on_log:
