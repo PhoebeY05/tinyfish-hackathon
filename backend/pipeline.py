@@ -42,7 +42,7 @@ def normalize_species(common_name: str) -> tuple[str, str]:
     return CANONICAL_TAXONOMY.get(common_name.lower(), (common_name, "Unknown"))
 
 
-def classify_image(image_name: str) -> dict[str, Any]:
+def _fallback_classify_image(image_name: str) -> dict[str, Any]:
     seed = sum(ord(ch) for ch in image_name.lower())
     random.seed(seed)
     start = random.randint(0, len(CANDIDATES) - 1)
