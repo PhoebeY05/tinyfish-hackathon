@@ -13,6 +13,9 @@ class Settings:
     enable_live_lookups: bool
     tinyfish_api_key: str
     tinyfish_base_url: str
+    enable_openai_classification: bool
+    openai_api_key: str
+    openai_model: str
 
 
 def _parse_bool(value: str | None, default: bool = False) -> bool:
@@ -23,6 +26,8 @@ def _parse_bool(value: str | None, default: bool = False) -> bool:
 
 def load_settings() -> Settings:
     enable_live_lookups = _parse_bool(os.getenv("ENABLE_LIVE_LOOKUPS"), False)
+    enable_openai_classification = _parse_bool(os.getenv("ENABLE_OPENAI_CLASSIFICATION"), False)
+    
     settings = Settings(
         port=int(os.getenv("PORT", "3000")),
         upload_dir=Path(os.getenv("UPLOAD_DIR", "data/uploads")).resolve(),
@@ -30,11 +35,19 @@ def load_settings() -> Settings:
         enable_live_lookups=enable_live_lookups,
         tinyfish_api_key=os.getenv("TINYFISH_API_KEY", ""),
         tinyfish_base_url=os.getenv("TINYFISH_BASE_URL", "https://api.tinyfish.ai"),
+        enable_openai_classification=enable_openai_classification,
+        openai_api_key=os.getenv("OPENAI_API_KEY", ""),
+        openai_model=os.getenv("OPENAI_MODEL", "gpt-4o"),
     )
 
     if settings.enable_live_lookups and not settings.tinyfish_api_key:
         raise RuntimeError(
             "ENABLE_LIVE_LOOKUPS=true requires TINYFISH_API_KEY. Startup blocked by fail-fast config validation."
+        )
+    
+    if settings.enable_openai_classification and not settings.openai_api_key:
+        raise RuntimeError(
+            "ENABLE_OPENAI_CLASSIFICATION=true requires OPENAI_API_KEY. Startup blocked by fail-fast config validation."
         )
 
     return settings

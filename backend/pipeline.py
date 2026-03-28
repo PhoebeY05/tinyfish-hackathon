@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import random
 import shutil
@@ -9,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import requests
+from openai import OpenAI
 
 from .config import Settings
 from .job_store import JobStore
@@ -53,6 +55,113 @@ def classify_image(image_name: str) -> dict[str, Any]:
         ],
         "model": "baseline-placeholder-v1",
     }
+
+
+def classify_image_with_openai(image_path: Path, settings: Settings) -> dict[str, Any]:
+    """
+    Classify a bird image using OpenAI's Vision API.
+    
+    Returns a dict with the same structure as classify_image():
+    {
+        "primary": {"common_name": str, "confidence": float},
+        "alternates": [{"common_name": str, "confidence": float}, ...],
+        "model": "gpt-4-vision" or similar
+    }
+    """
+    client = OpenAI(api_key=settings.openai_api_key)
+    
+    # Read and encode image as base64
+    with open(image_path, "rb") as img_file:
+        image_data = base64.standard_b64encode(img_file.read()).decode("utf-8")
+    
+    # Determine image media type
+    ext = image_path.suffix.lower()
+    media_type_map = {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".webp": "image/webp",
+    }
+    media_type = media_type_map.get(ext, "image/jpeg")
+    
+    # Call OpenAI Vision API
+    response = client.chat.completions.create(
+        model=settings.openai_model,
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:{media_type};base64,{image_data}",
+                        },
+                    },
+                    {
+                        "type": "text",
+                        "text": """Analyze this bird image and identify the bird species.
+                        
+Return a JSON response with this exact structure:
+{
+  "primary_species": "Common Name (e.g., Red-tailed Hawk)",
+  "scientific_name": "Genus species (e.g., Buteo jamaicensis)",
+  "confidence": 0.85,
+  "alternate_1_species": "Common Name",
+  "alternate_1_scientific_name": "Genus species",
+  "alternate_1_confidence": 0.65,
+  "alternate_2_species": "Common Name",
+  "alternate_2_scientific_name": "Genus species",
+  "alternate_2_confidence": 0.45,
+  "reasoning": "Brief reason for identification"
+}
+
+If the image does not contain a bird, set confidence to 0 and explain in reasoning.
+Only return valid JSON, no other text.""",
+                    },
+                ],
+            }
+        ],
+        temperature=0.2,  # Lower temp for more consistent classifications
+    )
+    
+    # Parse OpenAI response
+    try:
+        content = response.choices[0].message.content
+        # Extract JSON from the response (in case there's extra text)
+        import json as json_module
+
+        # Try to find JSON in the response
+        if "```json" in content:
+            json_str = content.split("```json")[1].split("```")[0]
+        elif "```" in content:
+            json_str = content.split("```")[1].split("```")[0]
+        else:
+            json_str = content
+        
+        data = json_module.loads(json_str)
+        
+        return {
+            "primary": {
+                "common_name": data.get("primary_species", "Unknown"),
+                "confidence": float(data.get("confidence", 0.5)),
+            },
+            "alternates": [
+                {
+                    "common_name": data.get("alternate_1_species", "Unknown"),
+                    "confidence": float(data.get("alternate_1_confidence", 0.3)),
+                },
+                {
+                    "common_name": data.get("alternate_2_species", "Unknown"),
+                    "confidence": float(data.get("alternate_2_confidence", 0.2)),
+                },
+            ],
+            "model": settings.openai_model,
+            "reasoning": data.get("reasoning", ""),
+        }
+    except Exception as e:
+        print(f"Error parsing OpenAI response: {e}")
+        # Fallback to placeholder if parsing fails
+        return classify_image(image_path.name)
 
 
 def tinyfish_evidence_lookup(
@@ -279,7 +388,12 @@ def process_job(job_id: str, store: JobStore, settings: Settings) -> None:
         image_reports: list[dict[str, Any]] = []
 
         for index, image_path in enumerate(images, start=1):
-            prediction = classify_image(image_path.name)
+            # Use OpenAI classification if enabled, otherwise use placeholder
+            if settings.enable_openai_classification:
+                prediction = classify_image_with_openai(image_path, settings)
+            else:
+                prediction = classify_image(image_path.name)
+            
             primary_common = prediction["primary"]["common_name"]
             primary_common, primary_sci = normalize_species(primary_common)
 
