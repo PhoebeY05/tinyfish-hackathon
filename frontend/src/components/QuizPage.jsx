@@ -1,53 +1,91 @@
 import { useEffect, useMemo, useState } from 'react';
 
-const QUIZ_LOCAL_FALLBACK = [
-    { commonName: 'Asian Koel', wikipediaTitle: 'Asian_koel', aliases: ['asian koel', 'koel'] },
-    {
-        commonName: 'Collared Kingfisher',
-        wikipediaTitle: 'Collared_kingfisher',
-        aliases: ['collared kingfisher', 'white-collared kingfisher', 'kingfisher'],
-    },
-    {
-        commonName: 'Olive-backed Sunbird',
-        wikipediaTitle: 'Olive-backed_sunbird',
-        aliases: ['olive-backed sunbird', 'olive backed sunbird', 'yellow-bellied sunbird', 'sunbird'],
-    },
-    {
-        commonName: 'Yellow-vented Bulbul',
-        wikipediaTitle: 'Yellow-vented_bulbul',
-        aliases: ['yellow-vented bulbul', 'yellow vented bulbul', 'bulbul'],
-    },
-    {
-        commonName: 'Brahminy Kite',
-        wikipediaTitle: 'Brahminy_kite',
-        aliases: ['brahminy kite', 'red-backed sea eagle', 'red backed sea eagle', 'kite'],
-    },
-    {
-        commonName: 'Black-naped Oriole',
-        wikipediaTitle: 'Black-naped_oriole',
-        aliases: ['black-naped oriole', 'black naped oriole', 'oriole'],
-    },
-    {
-        commonName: 'Javan Myna',
-        wikipediaTitle: 'Javan_myna',
-        aliases: ['javan myna', 'white-vented myna', 'white vented myna', 'myna'],
-    },
-    {
-        commonName: 'White-throated Kingfisher',
-        wikipediaTitle: 'White-throated_kingfisher',
-        aliases: ['white-throated kingfisher', 'white throated kingfisher', 'kingfisher'],
-    },
-    {
-        commonName: 'Scarlet-backed Flowerpecker',
-        wikipediaTitle: 'Scarlet-backed_flowerpecker',
-        aliases: ['scarlet-backed flowerpecker', 'scarlet backed flowerpecker', 'flowerpecker'],
-    },
-    {
-        commonName: 'Eurasian Tree Sparrow',
-        wikipediaTitle: 'Eurasian_tree_sparrow',
-        aliases: ['eurasian tree sparrow', 'tree sparrow', 'sparrow'],
-    },
-];
+const ALL_BIRD_SPECIES = [
+    'Asian Koel',
+    'Collared Kingfisher',
+    'Olive-backed Sunbird',
+    'Yellow-vented Bulbul',
+    'Brahminy Kite',
+    'Black-naped Oriole',
+    'Javan Myna',
+    'White-throated Kingfisher',
+    'Scarlet-backed Flowerpecker',
+    'Eurasian Tree Sparrow',
+    'Blue-tailed Bee-eater',
+    'House Crow',
+    'Pink-necked Green Pigeon',
+    'Crimson Sunbird',
+    'Common Tailorbird',
+    'Pacific Swallow',
+    'Little Egret',
+    'Cattle Egret',
+    'Black-crowned Night Heron',
+    'White-breasted Waterhen',
+    'Common Myna',
+    'Barn Swallow',
+    'Oriental Magpie-Robin',
+    'Zebra Dove',
+    'Spotted Dove',
+    'Red Junglefowl',
+    'Long-tailed Shrike',
+    'Ashy Tailorbird',
+    'Grey Heron',
+    'Purple Heron',
+    'Striated Heron',
+    'Pied Fantail',
+    'Dollarbird',
+    'Rufous Woodpecker',
+    'Lineated Barbet',
+    'Coppersmith Barbet',
+    'Greater Coucal',
+    'Lesser Coucal',
+    'Black Baza',
+    'Changeable Hawk-Eagle',
+    'Crested Goshawk',
+    'Shikra',
+    'White-bellied Sea Eagle',
+    'Grey-headed Fish Eagle',
+    'Peregrine Falcon',
+    'Black-winged Kite',
+    'Eurasian Kestrel',
+    'Rose-ringed Parakeet',
+    'Blue-crowned Hanging Parrot',
+    'Red-breasted Parakeet',
+    'Chestnut Munia',
+    'Scaly-breasted Munia',
+    'White-rumped Munia',
+    'Baya Weaver',
+    'Common Iora',
+    'Yellow-browed Warbler',
+    'Arctic Warbler',
+    "Pallas's Grasshopper Warbler",
+    'Oriental Reed Warbler',
+    'Mugimaki Flycatcher',
+    'Asian Brown Flycatcher',
+    'Brown Shrike',
+    'Tiger Shrike',
+    'Black Drongo',
+    'Ashy Drongo',
+    'Greater Racket-tailed Drongo',
+    'Common Kingfisher',
+    'Stork-billed Kingfisher',
+    'Oriental Pied Hornbill',
+    'Black Hornbill',
+    'Crested Serpent Eagle',
+    'Indian Cuckoo',
+    'Plaintive Cuckoo',
+    'Savanna Nightjar',
+    'Large-tailed Nightjar',
+    'Little Tern',
+    'Whiskered Tern',
+    'Common Sandpiper',
+    'Wood Sandpiper',
+    'Pied Imperial Pigeon',
+    'Green Imperial Pigeon',
+].map((name) => ({
+    commonName: name,
+    aliases: [name, name.replace('-', ' ')],
+}));
 
 const HIGH_SCORE_KEY = 'tinyfish:quiz:high-score';
 const LAST_SCORE_KEY = 'tinyfish:quiz:last-score';
@@ -114,9 +152,8 @@ export default function QuizPage() {
     const [secondsPerQuestion, setSecondsPerQuestion] = useState(20);
 
     const [questions, setQuestions] = useState([]);
-    const [speciesPool, setSpeciesPool] = useState(QUIZ_LOCAL_FALLBACK);
+    const [speciesPool, setSpeciesPool] = useState(ALL_BIRD_SPECIES);
     const [geography, setGeography] = useState('Global');
-    const [catalogSource, setCatalogSource] = useState('local');
     const [catalogError, setCatalogError] = useState(null);
     const [loadingQuestions, setLoadingQuestions] = useState(false);
     const [questionIndex, setQuestionIndex] = useState(0);
@@ -152,16 +189,14 @@ export default function QuizPage() {
             }
 
             const data = await res.json();
-            const remoteSpecies = Array.isArray(data.species) && data.species.length > 0 ? data.species : QUIZ_LOCAL_FALLBACK;
+            const remoteSpecies = Array.isArray(data.species) && data.species.length > 0 ? data.species : ALL_BIRD_SPECIES;
             setSpeciesPool(remoteSpecies);
-            setCatalogSource(data.source || 'tinyfish');
             setCatalogError(data.error || null);
             return remoteSpecies;
         } catch (err) {
-            setSpeciesPool(QUIZ_LOCAL_FALLBACK);
-            setCatalogSource('local');
+            setSpeciesPool(ALL_BIRD_SPECIES);
             setCatalogError(err.message);
-            return QUIZ_LOCAL_FALLBACK;
+            return ALL_BIRD_SPECIES;
         }
     };
 
@@ -323,7 +358,7 @@ export default function QuizPage() {
                 </div>
 
                 <div className="text-xs font-mono text-muted mb-6">
-                    Species pool: {speciesPool.length} birds · Source: {catalogSource}
+                    Species pool: {speciesPool.length} birds
                     {catalogError ? ` · Fallback reason: ${catalogError}` : ''}
                 </div>
 

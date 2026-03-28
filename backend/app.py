@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 
 from .config import load_settings
 from .job_store import JobStore
-from .pipeline import process_job
+from .pipeline import QUIZ_FALLBACK_SPECIES, process_job
 from .quiz_store import QuizStore
 from .rarity_leaderboard import RarityLeaderboardStore
 
@@ -70,7 +70,17 @@ def quiz_species(
     geography: str = Query("Global"),
     limit: int = Query(250, ge=20, le=500),
 ) -> dict[str, object]:
-    return get_quiz_species_catalog(settings=settings, geography=geography, limit=limit)
+    species = [
+        {"commonName": name, "aliases": [name, name.replace("-", " ")]}
+        for name in QUIZ_FALLBACK_SPECIES[:limit]
+    ]
+    return {
+        "species": species,
+        "source": "all-birds-list",
+        "live": False,
+        "count": len(species),
+        "geography": geography,
+    }
 
 
 @app.post("/uploads")
