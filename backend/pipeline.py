@@ -204,8 +204,18 @@ def _extract_json_from_text(text: str) -> dict[str, Any] | list[Any] | None:
 
 
 def _extract_json_from_tinyfish_event(event: Any) -> dict[str, Any] | list[Any] | None:
+    # Check for result_json attribute (completion events may have this)
+    if hasattr(event, "result_json") and event.result_json:
+        if isinstance(event.result_json, str):
+            parsed = _extract_json_from_text(event.result_json)
+        else:
+            parsed = event.result_json
+        if isinstance(parsed, (dict, list)):
+            return parsed
+    
     if isinstance(event, dict):
-        for key in ("output", "text", "content", "data", "message", "delta"):
+        # Include result_json in the keys to check
+        for key in ("output", "text", "content", "data", "message", "delta", "result_json"):
             value = event.get(key)
             if isinstance(value, (dict, list)):
                 return value
@@ -243,19 +253,41 @@ def _run_tinyfish_agent_with_logs(
 ) -> dict[str, Any] | list[Any]:
     client = _build_tinyfish_client(settings)
     stream_chunks: list[str] = []
+    event_count = 0
 
     with client.agent.stream(url=url, goal=goal) as stream:
         for event in stream:
+            event_count += 1
+            
+            # Log event metadata for debugging
+            event_meta = ""
+            if hasattr(event, "type"):
+                event_meta += f" type={event.type}"
+            if hasattr(event, "status"):
+                event_meta += f" status={event.status}"
+            if hasattr(event, "result_json"):
+                event_meta += " [HAS_result_json]"
+            
+            if on_log:
+                on_log(f"Event {event_count}:{event_meta} | {str(event)[:120]}")
+            
+            # Try to extract JSON from this event
             parsed = _extract_json_from_tinyfish_event(event)
             if isinstance(parsed, (dict, list)):
+                if on_log:
+                    on_log(f"✓ Extracted JSON from event {event_count}")
                 return parsed
 
+            # Collect full stream text for fallback parsing
             event_text = str(event).strip()
             if event_text:
                 stream_chunks.append(event_text)
                 if on_log and "EventType.PROGRESS" in event_text:
                     on_log(f"TinyFish progress: {event_text[:180]}")
 
+    if on_log:
+        on_log(f"Stream completed. Total events: {event_count}. Attempting full stream parsing...")
+    
     parsed = _extract_json_from_text("\n".join(stream_chunks))
     if isinstance(parsed, (dict, list)):
         return parsed
@@ -506,8 +538,16 @@ def tinyfish_evidence_lookup(
 
 
 def compute_dispute(primary_confidence: float, primary_name: str, evidence: list[dict[str, Any]]) -> dict[str, str]:
-    supports = sum(1 for item in evidence if item.get("supports") == primary_name)
-    contradicts = sum(1 for item in evidence if item.get("contradicts") == primary_name)
+    primary_key = _normalize_species_key(primary_name)
+    supports = 0
+    contradicts = 0
+    for item in evidence:
+        if _evidence_item_weight(item) <= 0:
+            continue
+        if _normalize_species_key(item.get("supports")) == primary_key:
+            supports += 1
+        if _normalize_species_key(item.get("contradicts")) == primary_key:
+            contradicts += 1
 
     if primary_confidence < 0.65 or (contradicts > 0 and contradicts >= supports):
         return {
@@ -526,6 +566,61 @@ def compute_dispute(primary_confidence: float, primary_name: str, evidence: list
         "reason": "Model and source evidence aligned.",
         "review_status": "review_ready",
     }
+
+
+def _normalize_species_key(name: str | None) -> str:
+    return (name or "").strip().lower()
+
+
+def _evidence_item_weight(item: dict[str, Any]) -> float:
+    evidence_type = str(item.get("type") or "").strip().lower()
+    source = str(item.get("source") or "").strip().lower()
+
+    # Base model confidence already captures model inference.
+    if evidence_type == "model_prediction" or source == "model_inference":
+        return 0.0
+    if evidence_type == "live_sighting":
+        return 1.0
+    if evidence_type == "species_profile":
+        return 0.8
+    if evidence_type == "community_debate":
+        return 0.45
+    return 0.6
+
+
+def compute_aggregated_confidence(
+    model_confidence: float,
+    primary_name: str,
+    evidence: list[dict[str, Any]],
+) -> float:
+    base = max(0.0, min(1.0, float(model_confidence)))
+    primary_key = _normalize_species_key(primary_name)
+    if not primary_key:
+        return base
+
+    support_weight = 0.0
+    contradict_weight = 0.0
+    for item in evidence:
+        weight = _evidence_item_weight(item)
+        if weight <= 0:
+            continue
+
+        supports_key = _normalize_species_key(item.get("supports"))
+        contradicts_key = _normalize_species_key(item.get("contradicts"))
+        if supports_key == primary_key:
+            support_weight += weight
+        if contradicts_key == primary_key:
+            contradict_weight += weight
+
+    total_weight = support_weight + contradict_weight
+    if total_weight <= 0:
+        return base
+
+    net_support = (support_weight - contradict_weight) / total_weight  # -1 to +1
+    evidence_strength = min(1.0, total_weight / 4.0)
+    max_shift = 0.28
+    adjusted = base + (net_support * evidence_strength * max_shift)
+    return round(max(0.0, min(1.0, adjusted)), 2)
 
 
 def _loading_location_context(geography: str) -> dict[str, str]:
@@ -556,17 +651,48 @@ def _location_context_from_evidence(geography: str, evidence: list[dict[str, Any
 def _extract_zip_images(zip_path: Path, output_dir: Path) -> list[Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     extracted: list[Path] = []
+    used_names: set[str] = set()
+
+    def _is_ignored_zip_entry(entry_name: str) -> bool:
+        path = Path(entry_name)
+        parts = path.parts
+        base = path.name
+        if not base:
+            return True
+        # Ignore hidden/system metadata entries commonly produced by macOS ZIP tools.
+        if any(part == "__MACOSX" for part in parts):
+            return True
+        if base.startswith("._") or base.startswith("."):
+            return True
+        return False
+
+    def _dedupe_name(original_name: str) -> str:
+        if original_name not in used_names:
+            used_names.add(original_name)
+            return original_name
+
+        stem = Path(original_name).stem
+        suffix = Path(original_name).suffix
+        counter = 2
+        while True:
+            candidate = f"{stem}_{counter}{suffix}"
+            if candidate not in used_names:
+                used_names.add(candidate)
+                return candidate
+            counter += 1
 
     with zipfile.ZipFile(zip_path, "r") as archive:
         for info in archive.infolist():
             if info.is_dir():
+                continue
+            if _is_ignored_zip_entry(info.filename):
                 continue
             filename = Path(info.filename).name
             suffix = Path(filename).suffix.lower()
             if suffix not in SUPPORTED_EXT:
                 continue
 
-            target = output_dir / filename
+            target = output_dir / _dedupe_name(filename)
             with archive.open(info) as src, open(target, "wb") as dst:
                 shutil.copyfileobj(src, dst)
             extracted.append(target)
@@ -848,7 +974,11 @@ def process_job(job_id: str, store: JobStore, settings: Settings) -> None:
             ]
 
             dispute = compute_dispute(
-                primary_confidence=prediction["primary"]["confidence"],
+                primary_confidence=compute_aggregated_confidence(
+                    model_confidence=prediction["primary"]["confidence"],
+                    primary_name=prediction["primary"]["common_name"],
+                    evidence=all_evidence,
+                ),
                 primary_name=prediction["primary"]["common_name"],
                 evidence=all_evidence,
             )
@@ -860,7 +990,11 @@ def process_job(job_id: str, store: JobStore, settings: Settings) -> None:
                     "primary_prediction": {
                         "common_name": item["primary_common"],
                         "scientific_name": item["primary_sci"],
-                        "confidence": prediction["primary"]["confidence"],
+                        "confidence": compute_aggregated_confidence(
+                            model_confidence=prediction["primary"]["confidence"],
+                            primary_name=prediction["primary"]["common_name"],
+                            evidence=all_evidence,
+                        ),
                     },
                     "alternate_candidates": item["alternates"],
                     "location_context": _loading_location_context(job.metadata["geography"]),
@@ -1015,8 +1149,18 @@ def process_job(job_id: str, store: JobStore, settings: Settings) -> None:
                                     classified_item = classified_by_index.get(image_index)
                                     if classified_item:
                                         prediction = classified_item["prediction"]
+                                        aggregated_confidence = compute_aggregated_confidence(
+                                            model_confidence=prediction["primary"]["confidence"],
+                                            primary_name=prediction["primary"]["common_name"],
+                                            evidence=image_copy["evidence"],
+                                        )
+                                        existing_primary = image_copy.get("primary_prediction", {})
+                                        image_copy["primary_prediction"] = {
+                                            **existing_primary,
+                                            "confidence": aggregated_confidence,
+                                        }
                                         dispute = compute_dispute(
-                                            primary_confidence=prediction["primary"]["confidence"],
+                                            primary_confidence=aggregated_confidence,
                                             primary_name=prediction["primary"]["common_name"],
                                             evidence=image_copy["evidence"],
                                         )
@@ -1064,7 +1208,11 @@ def process_job(job_id: str, store: JobStore, settings: Settings) -> None:
                     ]
 
                     dispute = compute_dispute(
-                        primary_confidence=prediction["primary"]["confidence"],
+                        primary_confidence=compute_aggregated_confidence(
+                            model_confidence=prediction["primary"]["confidence"],
+                            primary_name=prediction["primary"]["common_name"],
+                            evidence=all_evidence,
+                        ),
                         primary_name=prediction["primary"]["common_name"],
                         evidence=all_evidence,
                     )
@@ -1076,7 +1224,11 @@ def process_job(job_id: str, store: JobStore, settings: Settings) -> None:
                             "primary_prediction": {
                                 "common_name": item["primary_common"],
                                 "scientific_name": item["primary_sci"],
-                                "confidence": prediction["primary"]["confidence"],
+                                "confidence": compute_aggregated_confidence(
+                                    model_confidence=prediction["primary"]["confidence"],
+                                    primary_name=prediction["primary"]["common_name"],
+                                    evidence=all_evidence,
+                                ),
                             },
                             "alternate_candidates": item["alternates"],
                             "location_context": _location_context_from_evidence(

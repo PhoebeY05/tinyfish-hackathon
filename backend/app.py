@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-import logging
-import os
 import shutil
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-import psycopg2
 from dotenv import load_dotenv
 from fastapi import (BackgroundTasks, FastAPI, File, Form, HTTPException,
                      Query, UploadFile)
@@ -28,10 +25,6 @@ settings = load_settings()
 store = JobStore()
 quiz_store = QuizStore(settings.quiz_db_path)
 rarity_store = RarityLeaderboardStore(settings.rarity_leaderboard_db_path)
-DATABASE_URL = os.environ.get("DATABASE_URL")
-REQUIRE_DATABASE = os.environ.get("REQUIRE_DATABASE", "false").lower() == "true"
-PG_CONNECT_TIMEOUT_SECONDS = int(os.environ.get("PG_CONNECT_TIMEOUT_SECONDS", "3"))
-logger = logging.getLogger(__name__)
 
 settings.upload_dir.mkdir(parents=True, exist_ok=True)
 settings.report_dir.mkdir(parents=True, exist_ok=True)
@@ -53,35 +46,6 @@ class RarityLeaderboardSubmit(BaseModel):
     jobId: str = Field(min_length=1, max_length=128)
     participantId: str = Field(min_length=1, max_length=128)
     displayName: str = Field(min_length=1, max_length=128)
-
-
-@app.on_event("startup")
-def startup_database_connection() -> None:
-    if not DATABASE_URL:
-        if REQUIRE_DATABASE:
-            raise RuntimeError("DATABASE_URL is required for PostgreSQL connection.")
-        app.state.db_conn = None
-        logger.warning("DATABASE_URL is not set; starting without PostgreSQL connection.")
-        return
-
-    try:
-        app.state.db_conn = psycopg2.connect(
-            DATABASE_URL,
-            sslmode="require",
-            connect_timeout=PG_CONNECT_TIMEOUT_SECONDS,
-        )
-    except Exception as exc:
-        if REQUIRE_DATABASE:
-            raise RuntimeError(f"PostgreSQL connection failed: {exc}") from exc
-        app.state.db_conn = None
-        logger.warning("PostgreSQL unavailable, continuing without DB: %s", exc)
-
-
-@app.on_event("shutdown")
-def shutdown_database_connection() -> None:
-    db_conn = getattr(app.state, "db_conn", None)
-    if db_conn:
-        db_conn.close()
 
 
 @app.get("/api/quiz/species")
